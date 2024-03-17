@@ -65,6 +65,76 @@ namespace detail
 			*reinterpret_cast<Callable>(target),
 			std::forward<Args>(args)...);
 	}
+
+	/**	Implements a (mostly) non-nullable, callable reference to an invocable target.
+	 *	@note Required as MSVC does not support deduction of function signature noexcept in template specialization.
+	 *	@tparam NoExcept True if this targets a nothrow invocable and false otherwise.
+	 *	@tparam ResultType The result of calling this.
+	 *	@tparam Args The arguments necessary to call this.
+	 */
+	template <bool NoExcept, typename ResultType, typename... Args>
+	class function_ref
+	{
+	public:
+		using result_type = ResultType;
+
+		function_ref() = delete;
+		function_ref& operator=(const function_ref&) = delete;
+		function_ref& operator=(function_ref&&) = delete;
+
+		/**	Default copy constructor.
+		 */
+		function_ref(const function_ref&) = default;
+		/**	Default move constructor.
+		 */
+		function_ref(function_ref&&) = default;
+		/**	Constructor from a given callable.
+		 *	@param callable An invocable target to which this will hold a pointer.
+		 *	@tparam Callable The type of the given invocable target.
+		 */
+		template <typename Callable,
+			typename = std::enable_if_t<
+				std::is_invocable_r_v<result_type, Callable&&, Args...>
+				&& false == std::is_same_v<std::decay_t<Callable>, function_ref>
+				&& false == std::is_pointer_v<Callable>
+				&& false == std::is_member_function_pointer_v<Callable>
+				&& false == std::is_member_object_pointer_v<Callable>
+			>
+		>
+		constexpr function_ref(Callable&& callable) noexcept
+			: m_invoke_target{ &detail::function_ref_invoke_target<std::add_pointer_t<Callable>, NoExcept, result_type, Args...> }
+			, m_target{ const_cast<void*>(reinterpret_cast<const void*>(std::addressof(callable))) }
+		{
+			static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "function_ref requires nothrow invocable.");
+		}
+
+		/**	Invoke the referenced callable.
+		 *	@param args The arguments to pass to the pointed-to callable.
+		 *	@tparam OperatorArgs The arguments to forward to m_invoke_target.
+		 *	@return The result of invoking the pointed-to callable with args.
+		 */
+		template <typename... OperatorArgs>
+		result_type operator()(OperatorArgs&&... args) const noexcept(NoExcept)
+		{
+			return m_invoke_target(m_target, std::forward<OperatorArgs>(args)...);
+		}
+
+	private:
+		/**	The function pointer type of m_invoke_target.
+		 *	@details Accepts m_target as its first argument followed by "Args..." and returns return_type.
+		 */
+		using invoke_target_type = result_type(*)(void*, Args...) noexcept(NoExcept);
+
+		/**	A function pointer equal to nullptr or a specialization of &detail::function_ref_invoke_target.
+		 *	@details Non-null. Accepts m_target as its first argument followed by "Args..." and returns return_type.
+		 */
+		invoke_target_type m_invoke_target;
+		/**	A pointer value used by m_invoke_target to call a given callable object.
+		 *	@details Non-null.
+		 */
+		void* m_target;
+	};
+
 } // namespace detail
 
 /**	Implements a (mostly) non-nullable, callable reference to an invocable target.
@@ -74,72 +144,25 @@ template <typename Signature>
 class function_ref;
 
 /**	Implements a (mostly) non-nullable, callable reference to an invocable target.
- *	@tparam NoExcept True if this targets a nothrow invocable and false otherwise.
  *	@tparam ResultType The result of calling this.
  *	@tparam Args The arguments necessary to call this.
  */
-template <bool NoExcept, typename ResultType, typename... Args>
-class function_ref <ResultType(Args...) noexcept(NoExcept)>
+template <typename ResultType, typename... Args>
+class function_ref <ResultType(Args...)> : public detail::function_ref<false, ResultType, Args...>
 {
 public:
-	using result_type = ResultType;
+	using detail::function_ref<false, ResultType, Args...>::function_ref;
+};
 
-	function_ref() = delete;
-	function_ref& operator=(const function_ref&) = delete;
-	function_ref& operator=(function_ref&&) = delete;
-
-	/**	Default copy constructor.
-	 */
-	function_ref(const function_ref&) = default;
-	/**	Default move constructor.
-	 */
-	function_ref(function_ref&&) = default;
-	/**	Constructor from a given callable.
- 	 *	@param callable An invocable target to which this will hold a pointer.
- 	 *	@tparam Callable The type of the given invocable target.
-	 */
-	template <typename Callable,
-		typename = std::enable_if_t<
-			std::is_invocable_r_v<result_type, Callable&&, Args...>
-			&& false == std::is_same_v<std::decay_t<Callable>, function_ref>
-			&& false == std::is_pointer_v<Callable>
-			&& false == std::is_member_function_pointer_v<Callable>
-			&& false == std::is_member_object_pointer_v<Callable>
-		>
-	>
-	constexpr function_ref(Callable&& callable) noexcept
-		: m_invoke_target{ &detail::function_ref_invoke_target<std::add_pointer_t<Callable>, NoExcept, result_type, Args...> }
-		, m_target{ const_cast<void*>(reinterpret_cast<const void*>(std::addressof(callable))) }
-	{
-		static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "function_ref requires nothrow invocable.");
-	}
-
-	/**	Invoke the referenced callable.
-	 *	@param args The arguments to pass to the pointed-to callable.
-	 *	@tparam OperatorArgs The arguments to forward to m_invoke_target.
-	 *	@return The result of invoking the pointed-to callable with args.
-	 */
-	template <typename... OperatorArgs>
-	result_type operator()(OperatorArgs&&... args) const noexcept(NoExcept)
-	{
-		assert(m_invoke_target != nullptr);
-		return m_invoke_target(m_target, std::forward<OperatorArgs>(args)...);
-	}
-
-private:
-	/**	The function pointer type of m_invoke_target.
-	 *	@details Accepts m_target as its first argument followed by "Args..." and returns return_type.
-	 */
-	using invoke_target_type = result_type(*)(void*, Args...) noexcept(NoExcept);
-
-	/**	A function pointer equal to nullptr or a specialization of &detail::function_ref_invoke_target.
-	 *	@details Non-null. Accepts m_target as its first argument followed by "Args..." and returns return_type.
-	 */
-	invoke_target_type m_invoke_target;
-	/**	A pointer value used by m_invoke_target to call a given callable object.
-	 *	@details Expected to be non-null.
-	 */
-	void* m_target;
+/**	Implements a (mostly) non-nullable, callable reference to a nothrow invocable target.
+ *	@tparam ResultType The result of calling this.
+ *	@tparam Args The arguments necessary to call this.
+ */
+template <typename ResultType, typename... Args>
+class function_ref <ResultType(Args...) noexcept> : public detail::function_ref<true, ResultType, Args...>
+{
+public:
+	using detail::function_ref<true, ResultType, Args...>::function_ref;
 };
 
 } // namespace sh

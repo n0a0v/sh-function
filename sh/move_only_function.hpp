@@ -174,6 +174,199 @@ namespace detail
 		move_only_function_vtable& operator=(const move_only_function_vtable&) = delete;
 		move_only_function_vtable& operator=(move_only_function_vtable&&) = delete;
 	};
+
+	/**	Implements a nullable, callable wrapper of an invocable that may only be moved.
+	 *	@note Required as MSVC does not support deduction of function signature noexcept in template specialization.
+	 *	@tparam NoExcept True if this wraps a nothrow invocable and false otherwise.
+	 *	@tparam ResultType The result of invoking this.
+	 *	@tparam Args The arguments necessary to invoking this.
+	 */
+	template <bool NoExcept, typename ResultType, typename... Args>
+	class move_only_function
+	{
+	public:
+		using result_type = ResultType;
+
+		move_only_function(const move_only_function&) = delete;
+		move_only_function& operator=(const move_only_function&) = delete;
+
+		/**	Default constructor.
+		 *	@detail calling results in undefined behavior.
+		 */
+		move_only_function() noexcept
+			: m_vtable{ &null_vtable() }
+		{ }
+		/**	Null constructor.
+		 *	@detail calling results in undefined behavior.
+		 */
+		move_only_function(const std::nullptr_t) noexcept
+			: m_vtable{ &null_vtable() }
+		{ }
+		/**	Move constructor.
+		 *	@param other The move_only_function to move into this.
+		 */
+		move_only_function(move_only_function&& other) noexcept
+			: m_vtable{ std::exchange(other.m_vtable, &null_vtable()) }
+		{
+			m_vtable->m_move(m_storage, other.m_storage);
+		}
+		/**	Constructor from a given callable.
+		 *	@param callable An invocable to wrap and call from operator().
+		 *	@tparam Callable The type of the given invocable target.
+		 */
+		template <typename Callable,
+			typename = std::enable_if_t<std::is_invocable_r_v<result_type, Callable, Args...>>>
+		move_only_function(Callable&& callable)
+		{
+			static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "move_only_function requires nothrow invocable.");
+			using callable_type = std::decay_t<Callable>;
+			m_vtable = &callable_vtable<callable_type>();
+			if constexpr (detail::move_only_function_storage::store_inplace<callable_type>())
+			{
+				new(&m_storage.m_inplace) callable_type{ std::forward<Callable>(callable) };
+			}
+			else
+			{
+				m_storage.m_allocated = new callable_type{ std::forward<Callable>(callable) };
+			}
+		}
+		/**	Destructor.
+		 */
+		~move_only_function()
+		{
+			m_vtable->m_dtor(m_storage);
+		}
+
+		/**	Move assigment.
+		 *	@param other The move_only_function to move into this.
+		 *	@return A reference to this.
+		 */
+		move_only_function& operator=(move_only_function&& other) noexcept
+		{
+			assert(this != &other);
+			m_vtable->m_dtor(m_storage);
+			m_vtable = std::exchange(other.m_vtable, &null_vtable());
+			m_vtable->m_move(m_storage, other.m_storage);
+			return *this;
+		}
+		/**	Assign a given callable as the wrapped invocable.
+		 *	@param callable An invocable target to which this will hold a pointer and invoke upon operator().
+		 *	@return A reference to this.
+		 *	@tparam Callable The type of the given invocable target.
+		 */
+		template <typename Callable,
+			typename = std::enable_if_t<std::is_invocable_r_v<result_type, Callable, Args...>>>
+		move_only_function& operator=(Callable&& callable) noexcept
+		{
+			static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "move_only_function requires nothrow invocable.");
+			using callable_type = std::decay_t<Callable>;
+			m_vtable->m_dtor(m_storage);
+			m_vtable = &callable_vtable<callable_type>();
+			if constexpr (detail::move_only_function_storage::store_inplace<callable_type>())
+			{
+				new(&m_storage.m_inplace) callable_type{ std::forward<Callable>(callable) };
+			}
+			else
+			{
+				m_storage.m_allocated = new callable_type{ std::forward<Callable>(callable) };
+			}
+			return *this;
+		}
+		/**	Null assignment.
+		 *	@detail Afterwards, calling results in undefined behavior.
+		 */
+		move_only_function& operator=(const std::nullptr_t) noexcept
+		{
+			m_vtable->m_dtor(m_storage);
+			m_vtable = &null_vtable();
+			return *this;
+		}
+		/**	Invoke the wrapped callable.
+		 *	@detail If this move_only_function is null, undefined behavior will result.
+		 *	@param args The arguments to pass to the pointed-to callable.
+		 *	@tparam OperatorArgs The arguments to forward to m_vtable->m_call.
+		 *	@return The result of invoking the pointed-to callable with args.
+		 */
+		template <typename... OperatorArgs>
+		ResultType operator()(OperatorArgs&&... args) const noexcept(NoExcept)
+		{
+			assert(m_vtable != &null_vtable());
+			return m_vtable->m_call(m_storage, std::forward<OperatorArgs>(args)...);
+		}
+		/**	Test if this is callable.
+		 *	@return True if this is non-null and callable via operator().
+		 */
+		constexpr explicit operator bool() const noexcept
+		{
+			return m_vtable != &null_vtable();
+		}
+		/**	Test if this is null.
+		 *	@detail True if this is null and calling operator() will result in undefined behavior.
+		 */
+		constexpr bool operator==(std::nullptr_t) const noexcept
+		{
+			return m_vtable == &null_vtable();
+		}
+		/**	Test if this is non-null.
+		 *	@return True if this is non-null and callable via operator().
+		 */
+		constexpr bool operator!=(std::nullptr_t) const noexcept
+		{
+			return m_vtable != &null_vtable();
+		}
+
+		/**	Swap this with another move_only_function.
+		 *	@param other The move_only_function with which to swap contents.
+		 */
+		void swap(move_only_function& other) noexcept
+		{
+			detail::move_only_function_storage temp;
+			m_vtable->m_move(temp, m_storage);
+			other.m_vtable->m_move(m_storage, other.m_storage);
+			m_vtable->m_move(other.m_storage, temp);
+			std::swap(m_vtable, other.m_vtable);
+		}
+		/**	Swap the two given move_only_function objects.
+		 *	@param lhs The move_only_function with which to swap contents with rhs.
+		 *	@param rhs The move_only_function with which to swap contents with lhs.
+		 */
+		friend void swap(move_only_function& lhs, move_only_function& rhs) noexcept
+		{
+			lhs.swap(rhs);
+		}
+
+	private:
+		using vtable_type = detail::move_only_function_vtable<NoExcept, ResultType, Args...>;
+
+		/**	A vtable that does operates upon storage containing the given callable type.
+		 *	@return A reference to a static vtable for the given callable type.
+		 *	@tparam Callable The callable type.
+		 */
+		template <typename Callable>
+		static const vtable_type& callable_vtable() noexcept
+		{
+			static const vtable_type instance{ detail::move_only_function_callable<Callable>{} };
+			return instance;
+		}
+
+		/**	A "null" vtable that does not operate upon storage. If called, will result in undefined behavior.
+		 *	@return A reference to a static "null" vtable.
+		 */
+		static const vtable_type& null_vtable() noexcept
+		{
+			const static vtable_type instance{ nullptr };
+			return instance;
+		}
+
+		/**	A table of function to call, destroy, or move the invocable stored in m_storage.
+		 */
+		const vtable_type* m_vtable;
+
+		/**	A stored callable that can be operated upon by passing to m_vtable's functions.
+		 */
+		mutable detail::move_only_function_storage m_storage;
+	};
+
 } // namespace detail
 
 /**	Implements a nullable, callable wrapper of an invocable that may only be moved.
@@ -183,194 +376,25 @@ template <typename Signature>
 class move_only_function;
 
 /**	Implements a nullable, callable wrapper of an invocable that may only be moved.
- *	@tparam NoExcept True if this wraps a nothrow invocable and false otherwise.
- *	@tparam ResultType The result of invoking this.
- *	@tparam Args The arguments necessary to invoking this.
+ *	@tparam ResultType The result of calling this.
+ *	@tparam Args The arguments necessary to call this.
  */
-template <bool NoExcept, typename ResultType, typename... Args>
-class move_only_function <ResultType(Args...) noexcept(NoExcept)>
+template <typename ResultType, typename... Args>
+class move_only_function <ResultType(Args...)> : public detail::move_only_function<false, ResultType, Args...>
 {
 public:
-	using result_type = ResultType;
+	using detail::move_only_function<false, ResultType, Args...>::move_only_function;
+};
 
-	move_only_function(const move_only_function&) = delete;
-	move_only_function& operator=(const move_only_function&) = delete;
-
-	/**	Default constructor.
-	 *	@detail calling results in undefined behavior.
-	 */
-	move_only_function() noexcept
-		: m_vtable{ &null_vtable() }
-	{ }
-	/**	Null constructor.
-	 *	@detail calling results in undefined behavior.
-	 */
-	move_only_function(const std::nullptr_t) noexcept
-		: m_vtable{ &null_vtable() }
-	{ }
-	/**	Move constructor.
-	 *	@param other The move_only_function to move into this.
-	 */
-	move_only_function(move_only_function&& other) noexcept
-		: m_vtable{ std::exchange(other.m_vtable, &null_vtable()) }
-	{
-		m_vtable->m_move(m_storage, other.m_storage);
-	}
-	/**	Constructor from a given callable.
- 	 *	@param callable An invocable to wrap and call from operator().
- 	 *	@tparam Callable The type of the given invocable target.
-	 */
-	template <typename Callable,
-		typename = std::enable_if_t<std::is_invocable_r_v<result_type, Callable, Args...>>>
-	move_only_function(Callable&& callable)
-	{
-		static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "move_only_function requires nothrow invocable.");
-		using callable_type = std::decay_t<Callable>;
-		m_vtable = &callable_vtable<callable_type>();
-		if constexpr (detail::move_only_function_storage::store_inplace<callable_type>())
-		{
-			new(&m_storage.m_inplace) callable_type{ std::forward<Callable>(callable) };
-		}
-		else
-		{
-			m_storage.m_allocated = new callable_type{ std::forward<Callable>(callable) };
-		}
-	}
-	/**	Destructor.
-	 */
-	~move_only_function()
-	{
-		m_vtable->m_dtor(m_storage);
-	}
-
-	/**	Move assigment.
-	 *	@param other The move_only_function to move into this.
-	 *	@return A reference to this.
-	 */
-	move_only_function& operator=(move_only_function&& other) noexcept
-	{
-		assert(this != &other);
-		m_vtable->m_dtor(m_storage);
-		m_vtable = std::exchange(other.m_vtable, &null_vtable());
-		m_vtable->m_move(m_storage, other.m_storage);
-		return *this;
-	}
-	/**	Assign a given callable as the wrapped invocable.
- 	 *	@param callable An invocable target to which this will hold a pointer and invoke upon operator().
-	 *	@return A reference to this.
- 	 *	@tparam Callable The type of the given invocable target.
-	 */
-	template <typename Callable,
-		typename = std::enable_if_t<std::is_invocable_r_v<result_type, Callable, Args...>>>
-	move_only_function& operator=(Callable&& callable) noexcept
-	{
-		static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "move_only_function requires nothrow invocable.");
-		using callable_type = std::decay_t<Callable>;
-		m_vtable->m_dtor(m_storage);
-		m_vtable = &callable_vtable<callable_type>();
-		if constexpr (detail::move_only_function_storage::store_inplace<callable_type>())
-		{
-			new(&m_storage.m_inplace) callable_type{ std::forward<Callable>(callable) };
-		}
-		else
-		{
-			m_storage.m_allocated = new callable_type{ std::forward<Callable>(callable) };
-		}
-		return *this;
-	}
-	/**	Null assignment.
-	 *	@detail Afterwards, calling results in undefined behavior.
-	 */
-	move_only_function& operator=(const std::nullptr_t) noexcept
-	{
-		m_vtable->m_dtor(m_storage);
-		m_vtable = &null_vtable();
-		return *this;
-	}
-	/**	Invoke the wrapped callable.
-	 *	@detail If this move_only_function is null, undefined behavior will result.
-	 *	@param args The arguments to pass to the pointed-to callable.
-	 *	@tparam OperatorArgs The arguments to forward to m_vtable->m_call.
-	 *	@return The result of invoking the pointed-to callable with args.
-	 */
-	template <typename... OperatorArgs>
-	ResultType operator()(OperatorArgs&&... args) const noexcept(NoExcept)
-	{
-		assert(m_vtable != &null_vtable());
-		return m_vtable->m_call(m_storage, std::forward<OperatorArgs>(args)...);
-	}
-	/**	Test if this is callable.
-	 *	@return True if this is non-null and callable via operator().
-	 */
-	constexpr explicit operator bool() const noexcept
-	{
-		return m_vtable != &null_vtable();
-	}
-	/**	Test if this is null.
-	 *	@detail True if this is null and calling operator() will result in undefined behavior.
-	 */
-	constexpr bool operator==(std::nullptr_t) const noexcept
-	{
-		return m_vtable == &null_vtable();
-	}
-	/**	Test if this is non-null.
-	 *	@return True if this is non-null and callable via operator().
-	 */
-	constexpr bool operator!=(std::nullptr_t) const noexcept
-	{
-		return m_vtable != &null_vtable();
-	}
-
-	/**	Swap this with another move_only_function.
-	 *	@param other The move_only_function with which to swap contents.
-	 */
-	void swap(move_only_function& other) noexcept
-	{
-		detail::move_only_function_storage temp;
-		m_vtable->m_move(temp, m_storage);
-		other.m_vtable->m_move(m_storage, other.m_storage);
-		m_vtable->m_move(other.m_storage, temp);
-		std::swap(m_vtable, other.m_vtable);
-	}
-	/**	Swap the two given move_only_function objects.
-	 *	@param lhs The move_only_function with which to swap contents with rhs.
-	 *	@param rhs The move_only_function with which to swap contents with lhs.
-	 */
-	friend void swap(move_only_function& lhs, move_only_function& rhs) noexcept
-	{
-		lhs.swap(rhs);
-	}
-
-private:
-	using vtable_type = detail::move_only_function_vtable<NoExcept, ResultType, Args...>;
-
-	/**	A vtable that does operates upon storage containing the given callable type.
-	 *	@return A reference to a static vtable for the given callable type.
-	 *	@tparam Callable The callable type.
-	 */
-	template <typename Callable>
-	static const vtable_type& callable_vtable() noexcept
-	{
-		static const vtable_type instance{ detail::move_only_function_callable<Callable>{} };
-		return instance;
-	}
-
-	/**	A "null" vtable that does not operate upon storage. If called, will result in undefined behavior.
-	 *	@return A reference to a static "null" vtable.
-	 */
-	static const vtable_type& null_vtable() noexcept
-	{
-		const static vtable_type instance{ nullptr };
-		return instance;
-	}
-
-	/**	A table of function to call, destroy, or move the invocable stored in m_storage.
-	 */
-	const vtable_type* m_vtable;
-
-	/**	A stored callable that can be operated upon by passing to m_vtable's functions.
-	 */
-	mutable detail::move_only_function_storage m_storage;
+/**	Implements a nullable, callable wrapper of a nothrow invocable that may only be moved.
+ *	@tparam ResultType The result of calling this.
+ *	@tparam Args The arguments necessary to call this.
+ */
+template <typename ResultType, typename... Args>
+class move_only_function <ResultType(Args...) noexcept> : public detail::move_only_function<true, ResultType, Args...>
+{
+public:
+	using detail::move_only_function<true, ResultType, Args...>::move_only_function;
 };
 
 } // namespace sh

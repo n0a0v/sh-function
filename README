@@ -1,14 +1,22 @@
 See LICENSE for copyright details.
 
-This implementation requires a C++17 compliant compiler and has been tested with:
+This implementation requires a mostly C++17 compliant compiler and has been
+tested with:
 	* g++ 11
 	* g++ 12
 	* clang 15
+	* MSVC 2022 (17.9.3)
 
-CMake & binaries are setup for unit testing. Only each headers in the "sh"
-directory are necessary to use a function wrapper. Simply move any to a desired
-directory.
+CMake & binaries are setup for unit testing. Only any header in the "sh"
+directory is necessary to use that function wrapper. Simply move any header to
+a desired directory.
 
+sh::function_ptr:
+	* Intended to be similar to std::function_ref. A non-owning, nullable
+	  function wrapper.
+sh::function_ref:
+	* Intended to be similar to std::function_ref. A non-owning, non-nullable
+	  function wrapper.
 sh::copyable_function:
 	* Intended to be similar to std::copyable_function.
 sh::inplace_copyable_function:

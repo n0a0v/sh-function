@@ -191,6 +191,213 @@ namespace detail
 		copyable_function_vtable& operator=(const copyable_function_vtable&) = delete;
 		copyable_function_vtable& operator=(copyable_function_vtable&&) = delete;
 	};
+
+	/**	Implements a nullable, callable wrapper of an invocable.
+	 *	@note Required as MSVC does not support deduction of function signature noexcept in template specialization.
+	 *	@tparam NoExcept True if this wraps a nothrow invocable and false otherwise.
+	 *	@tparam ResultType The result of invoking this.
+	 *	@tparam Args The arguments necessary to invoking this.
+	 */
+	template <bool NoExcept, typename ResultType, typename... Args>
+	class copyable_function
+	{
+	public:
+		using result_type = ResultType;
+
+		/**	Default constructor.
+		 *	@detail calling results in undefined behavior.
+		 */
+		copyable_function() noexcept
+			: m_vtable{ &null_vtable() }
+		{ }
+		/**	Null constructor.
+		 *	@detail calling results in undefined behavior.
+		 */
+		copyable_function(const std::nullptr_t) noexcept
+			: m_vtable{ &null_vtable() }
+		{ }
+		/**	Copy constructor.
+		 */
+		copyable_function(const copyable_function& other)
+			: m_vtable{ other.m_vtable }
+		{
+			m_vtable->m_copy(m_storage, other.m_storage);
+		}
+		/**	Move constructor.
+		 *	@param other The copyable_function to move into this.
+		 */
+		copyable_function(copyable_function&& other) noexcept
+			: m_vtable{ std::exchange(other.m_vtable, &null_vtable()) }
+		{
+			m_vtable->m_move(m_storage, other.m_storage);
+		}
+		/**	Constructor from a given callable.
+		 *	@param callable An invocable to wrap and call from operator().
+		 *	@tparam Callable The type of the given invocable target.
+		 */
+		template <typename Callable,
+			typename = std::enable_if_t<std::is_invocable_r_v<result_type, Callable, Args...>>>
+		copyable_function(Callable&& copyable_function_callable)
+		{
+			static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "copyable_function requires nothrow invocable.");
+			using callable_type = std::decay_t<Callable>;
+			m_vtable = &invocable_vtable<callable_type>();
+			if constexpr (detail::copyable_function_storage::store_inplace<callable_type>())
+			{
+				new(&m_storage.m_inplace) callable_type{ std::forward<Callable>(copyable_function_callable) };
+			}
+			else
+			{
+				m_storage.m_allocated = new callable_type{ std::forward<Callable>(copyable_function_callable) };
+			}
+		}
+		/**	Destructor.
+		 */
+		~copyable_function()
+		{
+			m_vtable->m_dtor(m_storage);
+		}
+
+		/**	Copy assigment.
+		 *	@param other The copyable_function to copy into this.
+		 *	@return A reference to this.
+		 */
+		copyable_function& operator=(const copyable_function& other)
+		{
+			m_vtable->m_dtor(m_storage);
+			m_vtable->m_copy(m_storage, other.m_storage);
+			return *this;
+		}
+		/**	Move assigment.
+		 *	@param other The copyable_function to move into this.
+		 *	@return A reference to this.
+		 */
+		copyable_function& operator=(copyable_function&& other) noexcept
+		{
+			assert(this != &other);
+			m_vtable->m_dtor(m_storage);
+			m_vtable = std::exchange(other.m_vtable, &null_vtable());
+			m_vtable->m_move(m_storage, other.m_storage);
+			return *this;
+		}
+		/**	Assign a given callable as the wrapped invocable.
+		 *	@param callable An invocable target to which this will hold a pointer and invoke upon operator().
+		 *	@return A reference to this.
+		 *	@tparam Callable The type of the given invocable target.
+		 */
+		template <typename Callable,
+			typename = std::enable_if_t<std::is_invocable_r_v<result_type, Callable, Args...>>>
+		copyable_function& operator=(Callable&& copyable_function_callable) noexcept
+		{
+			static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "copyable_function requires nothrow invocable.");
+			using callable_type = std::decay_t<Callable>;
+			m_vtable->m_dtor(m_storage);
+			m_vtable = &invocable_vtable<callable_type>();
+			if constexpr (detail::copyable_function_storage::store_inplace<callable_type>())
+			{
+				new(&m_storage.m_inplace) callable_type{ std::forward<Callable>(copyable_function_callable) };
+			}
+			else
+			{
+				m_storage.m_allocated = new callable_type{ std::forward<Callable>(copyable_function_callable) };
+			}
+			return *this;
+		}
+		/**	Null assignment.
+		 *	@detail Afterwards, calling results in undefined behavior.
+		 */
+		copyable_function& operator=(const std::nullptr_t) noexcept
+		{
+			m_vtable->m_dtor(m_storage);
+			m_vtable = &null_vtable();
+			return *this;
+		}
+		/**	Invoke the wrapped callable.
+		 *	@detail If this copyable_function is null, undefined behavior will result.
+		 *	@param args The arguments to pass to the pointed-to callable.
+		 *	@tparam OperatorArgs The arguments to forward to m_vtable->m_call.
+		 *	@return The result of invoking the pointed-to callable with args.
+		 */
+		template <typename... OperatorArgs>
+		ResultType operator()(OperatorArgs&&... args) const noexcept(NoExcept)
+		{
+			assert(m_vtable != &null_vtable());
+			return m_vtable->m_call(m_storage, std::forward<OperatorArgs>(args)...);
+		}
+		/**	Test if this is callable.
+		 *	@return True if this is non-null and callable via operator().
+		 */
+		constexpr explicit operator bool() const noexcept
+		{
+			return m_vtable != &null_vtable();
+		}
+		/**	Test if this is null.
+		 *	@detail True if this is null and calling operator() will result in undefined behavior.
+		 */
+		constexpr bool operator==(std::nullptr_t) const noexcept
+		{
+			return m_vtable == &null_vtable();
+		}
+		/**	Test if this is non-null.
+		 *	@return True if this is non-null and callable via operator().
+		 */
+		constexpr bool operator!=(std::nullptr_t) const noexcept
+		{
+			return m_vtable != &null_vtable();
+		}
+
+		/**	Swap this with another copyable_function.
+		 *	@param other The copyable_function with which to swap contents.
+		 */
+		void swap(copyable_function& other) noexcept
+		{
+			detail::copyable_function_storage temp;
+			m_vtable->m_move(temp, m_storage);
+			other.m_vtable->m_move(m_storage, other.m_storage);
+			m_vtable->m_move(other.m_storage, temp);
+			std::swap(m_vtable, other.m_vtable);
+		}
+		/**	Swap the two given copyable_function objects.
+		 *	@param lhs The copyable_function with which to swap contents with rhs.
+		 *	@param rhs The copyable_function with which to swap contents with lhs.
+		 */
+		friend void swap(copyable_function& lhs, copyable_function& rhs) noexcept
+		{
+			lhs.swap(rhs);
+		}
+
+	private:
+		using vtable_type = detail::copyable_function_vtable<NoExcept, ResultType, Args...>;
+
+		/**	A vtable that does operates upon storage containing the given callable type.
+		 *	@return A reference to a static vtable for the given callable type.
+		 *	@tparam Callable The callable type.
+		 */
+		template <typename Callable>
+		static const vtable_type& invocable_vtable() noexcept
+		{
+			static const vtable_type instance{ detail::copyable_function_callable<Callable>{} };
+			return instance;
+		}
+
+		/**	A "null" vtable that does not operate upon storage. If called, will result in undefined behavior.
+		 *	@return A reference to a static "null" vtable.
+		 */
+		static const vtable_type& null_vtable() noexcept
+		{
+			const static vtable_type instance{ nullptr };
+			return instance;
+		}
+
+		/**	A table of function to call, destroy, copy, or move the invocable stored in m_storage.
+		 */
+		const vtable_type* m_vtable;
+
+		/**	A stored callable that can be operated upon by passing to m_vtable's functions.
+		 */
+		mutable detail::copyable_function_storage m_storage;
+	};
+
 } // namespace detail
 
 /**	Implements a nullable, callable wrapper of an invocable.
@@ -200,208 +407,25 @@ template <typename Signature>
 class copyable_function;
 
 /**	Implements a nullable, callable wrapper of an invocable.
- *	@tparam NoExcept True if this wraps a nothrow invocable and false otherwise.
- *	@tparam ResultType The result of invoking this.
- *	@tparam Args The arguments necessary to invoking this.
+ *	@tparam ResultType The result of calling this.
+ *	@tparam Args The arguments necessary to call this.
  */
-template <bool NoExcept, typename ResultType, typename... Args>
-class copyable_function <ResultType(Args...) noexcept(NoExcept)>
+template <typename ResultType, typename... Args>
+class copyable_function <ResultType(Args...)> : public detail::copyable_function<false, ResultType, Args...>
 {
 public:
-	using result_type = ResultType;
+	using detail::copyable_function<false, ResultType, Args...>::copyable_function;
+};
 
-	/**	Default constructor.
-	 *	@detail calling results in undefined behavior.
-	 */
-	copyable_function() noexcept
-		: m_vtable{ &null_vtable() }
-	{ }
-	/**	Null constructor.
-	 *	@detail calling results in undefined behavior.
-	 */
-	copyable_function(const std::nullptr_t) noexcept
-		: m_vtable{ &null_vtable() }
-	{ }
-	/**	Copy constructor.
-	 */
-	copyable_function(const copyable_function& other)
-		: m_vtable{ other.m_vtable }
-	{
-		m_vtable->m_copy(m_storage, other.m_storage);
-	}
-	/**	Move constructor.
-	 *	@param other The copyable_function to move into this.
-	 */
-	copyable_function(copyable_function&& other) noexcept
-		: m_vtable{ std::exchange(other.m_vtable, &null_vtable()) }
-	{
-		m_vtable->m_move(m_storage, other.m_storage);
-	}
-	/**	Constructor from a given callable.
- 	 *	@param callable An invocable to wrap and call from operator().
- 	 *	@tparam Callable The type of the given invocable target.
-	 */
-	template <typename Callable,
-		typename = std::enable_if_t<std::is_invocable_r_v<result_type, Callable, Args...>>>
-	copyable_function(Callable&& copyable_function_callable)
-	{
-		static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "copyable_function requires nothrow invocable.");
-		using callable_type = std::decay_t<Callable>;
-		m_vtable = &invocable_vtable<callable_type>();
-		if constexpr (detail::copyable_function_storage::store_inplace<callable_type>())
-		{
-			new(&m_storage.m_inplace) callable_type{ std::forward<Callable>(copyable_function_callable) };
-		}
-		else
-		{
-			m_storage.m_allocated = new callable_type{ std::forward<Callable>(copyable_function_callable) };
-		}
-	}
-	/**	Destructor.
-	 */
-	~copyable_function()
-	{
-		m_vtable->m_dtor(m_storage);
-	}
-
-	/**	Copy assigment.
-	 *	@param other The copyable_function to copy into this.
-	 *	@return A reference to this.
-	 */
-	copyable_function& operator=(const copyable_function& other)
-	{
-		m_vtable->m_dtor(m_storage);
-		m_vtable->m_copy(m_storage, other.m_storage);
-		return *this;
-	}
-	/**	Move assigment.
-	 *	@param other The copyable_function to move into this.
-	 *	@return A reference to this.
-	 */
-	copyable_function& operator=(copyable_function&& other) noexcept
-	{
-		assert(this != &other);
-		m_vtable->m_dtor(m_storage);
-		m_vtable = std::exchange(other.m_vtable, &null_vtable());
-		m_vtable->m_move(m_storage, other.m_storage);
-		return *this;
-	}
-	/**	Assign a given callable as the wrapped invocable.
- 	 *	@param callable An invocable target to which this will hold a pointer and invoke upon operator().
-	 *	@return A reference to this.
- 	 *	@tparam Callable The type of the given invocable target.
-	 */
-	template <typename Callable,
-		typename = std::enable_if_t<std::is_invocable_r_v<result_type, Callable, Args...>>>
-	copyable_function& operator=(Callable&& copyable_function_callable) noexcept
-	{
-		static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "copyable_function requires nothrow invocable.");
-		using callable_type = std::decay_t<Callable>;
-		m_vtable->m_dtor(m_storage);
-		m_vtable = &invocable_vtable<callable_type>();
-		if constexpr (detail::copyable_function_storage::store_inplace<callable_type>())
-		{
-			new(&m_storage.m_inplace) callable_type{ std::forward<Callable>(copyable_function_callable) };
-		}
-		else
-		{
-			m_storage.m_allocated = new callable_type{ std::forward<Callable>(copyable_function_callable) };
-		}
-		return *this;
-	}
-	/**	Null assignment.
-	 *	@detail Afterwards, calling results in undefined behavior.
-	 */
-	copyable_function& operator=(const std::nullptr_t) noexcept
-	{
-		m_vtable->m_dtor(m_storage);
-		m_vtable = &null_vtable();
-		return *this;
-	}
-	/**	Invoke the wrapped callable.
-	 *	@detail If this copyable_function is null, undefined behavior will result.
-	 *	@param args The arguments to pass to the pointed-to callable.
-	 *	@tparam OperatorArgs The arguments to forward to m_vtable->m_call.
-	 *	@return The result of invoking the pointed-to callable with args.
-	 */
-	template <typename... OperatorArgs>
-	ResultType operator()(OperatorArgs&&... args) const noexcept(NoExcept)
-	{
-		assert(m_vtable != &null_vtable());
-		return m_vtable->m_call(m_storage, std::forward<OperatorArgs>(args)...);
-	}
-	/**	Test if this is callable.
-	 *	@return True if this is non-null and callable via operator().
-	 */
-	constexpr explicit operator bool() const noexcept
-	{
-		return m_vtable != &null_vtable();
-	}
-	/**	Test if this is null.
-	 *	@detail True if this is null and calling operator() will result in undefined behavior.
-	 */
-	constexpr bool operator==(std::nullptr_t) const noexcept
-	{
-		return m_vtable == &null_vtable();
-	}
-	/**	Test if this is non-null.
-	 *	@return True if this is non-null and callable via operator().
-	 */
-	constexpr bool operator!=(std::nullptr_t) const noexcept
-	{
-		return m_vtable != &null_vtable();
-	}
-
-	/**	Swap this with another copyable_function.
-	 *	@param other The copyable_function with which to swap contents.
-	 */
-	void swap(copyable_function& other) noexcept
-	{
-		detail::copyable_function_storage temp;
-		m_vtable->m_move(temp, m_storage);
-		other.m_vtable->m_move(m_storage, other.m_storage);
-		m_vtable->m_move(other.m_storage, temp);
-		std::swap(m_vtable, other.m_vtable);
-	}
-	/**	Swap the two given copyable_function objects.
-	 *	@param lhs The copyable_function with which to swap contents with rhs.
-	 *	@param rhs The copyable_function with which to swap contents with lhs.
-	 */
-	friend void swap(copyable_function& lhs, copyable_function& rhs) noexcept
-	{
-		lhs.swap(rhs);
-	}
-
-private:
-	using vtable_type = detail::copyable_function_vtable<NoExcept, ResultType, Args...>;
-
-	/**	A vtable that does operates upon storage containing the given callable type.
-	 *	@return A reference to a static vtable for the given callable type.
-	 *	@tparam Callable The callable type.
-	 */
-	template <typename Callable>
-	static const vtable_type& invocable_vtable() noexcept
-	{
-		static const vtable_type instance{ detail::copyable_function_callable<Callable>{} };
-		return instance;
-	}
-
-	/**	A "null" vtable that does not operate upon storage. If called, will result in undefined behavior.
-	 *	@return A reference to a static "null" vtable.
-	 */
-	static const vtable_type& null_vtable() noexcept
-	{
-		const static vtable_type instance{ nullptr };
-		return instance;
-	}
-
-	/**	A table of function to call, destroy, copy, or move the invocable stored in m_storage.
-	 */
-	const vtable_type* m_vtable;
-
-	/**	A stored callable that can be operated upon by passing to m_vtable's functions.
-	 */
-	mutable detail::copyable_function_storage m_storage;
+/**	Implements a nullable, callable wrapper of a nothrow invocable.
+ *	@tparam ResultType The result of calling this.
+ *	@tparam Args The arguments necessary to call this.
+ */
+template <typename ResultType, typename... Args>
+class copyable_function <ResultType(Args...) noexcept> : public detail::copyable_function<true, ResultType, Args...>
+{
+public:
+	using detail::copyable_function<true, ResultType, Args...>::copyable_function;
 };
 
 } // namespace sh
