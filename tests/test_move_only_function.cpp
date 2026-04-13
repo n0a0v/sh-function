@@ -1,8 +1,7 @@
 #include <gtest/gtest.h>
 
-#include <sh/move_only_function.hpp>
-
 #include <memory>
+#include <sh/move_only_function.hpp>
 
 using sh::move_only_function;
 
@@ -132,7 +131,9 @@ TEST(sh_move_only_function, assign_small)
 	ASSERT_FALSE(bool(x));
 	ASSERT_EQ(x, nullptr);
 
-	x = []() { return 'x'; };
+	auto lambda = []() { return 'x'; };
+	static_assert(sizeof(lambda) <= sh::detail::move_only_function_storage::capacity, "small test isn't storing small callable.");
+	x = std::move(lambda);
 	ASSERT_TRUE(bool(x));
 	ASSERT_NE(x, nullptr);
 	ASSERT_EQ(x(), 'x');
@@ -574,6 +575,20 @@ TEST(sh_move_only_function, functor_large)
 	ASSERT_NE(x, nullptr);
 	EXPECT_EQ(x(0), 1);
 }
+TEST(sh_move_only_function, functor_const)
+{
+	struct plus_2 final
+	{
+		int operator()(const int input) const
+		{
+			return input + 2;
+		}
+	};
+	move_only_function<int(int)> x(plus_2{});
+	ASSERT_TRUE(bool(x));
+	ASSERT_NE(x, nullptr);
+	EXPECT_EQ(x(0), 2);
+}
 TEST(sh_move_only_function, lambda_small)
 {
 	auto plus_3 = [
@@ -607,4 +622,20 @@ TEST(sh_move_only_function, lambda_large)
 	ASSERT_TRUE(bool(x));
 	ASSERT_NE(x, nullptr);
 	EXPECT_EQ(x(0), 1);
+}
+TEST(sh_move_only_function, lambda_mutable)
+{
+	auto plus_3 = [
+		three = 3,
+		value = 0,
+		zero = std::make_unique<int>(0)
+	](const int input) mutable -> int
+	{
+		value = input;
+		return input + three + *zero;
+	};
+	const move_only_function<int(int)> x(std::move(plus_3));
+	ASSERT_TRUE(bool(x));
+	ASSERT_NE(x, nullptr);
+	EXPECT_EQ(x(0), 3);
 }

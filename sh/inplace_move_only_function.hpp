@@ -41,6 +41,7 @@
 #include <cstddef>
 #include <exception>
 #include <functional>
+#include <new>
 #include <type_traits>
 #include <utility>
 
@@ -130,16 +131,21 @@ namespace detail
 		inplace_move_only_function_vtable& operator=(inplace_move_only_function_vtable&&) = delete;
 	};
 
+	/**	Non-templated base of inplace_move_only_function.
+	 */
+	struct inplace_move_only_function_base
+	{ };
+
 	/**	Implements a nullable, callable wrapper of an invocable that may only be moved and is stored in-place.
 	 *	@note Required as MSVC does not support deduction of function signature noexcept in template specialization.
 	 *	@tparam NoExcept True if this wraps a nothrow invocable and false otherwise.
 	 *	@tparam Capacity The number of in-place storage bytes.
-	 *	@tparam Alignment The alighment of the in-place storage in bytes.
+	 *	@tparam Alignment The alignment of the in-place storage in bytes.
 	 *	@tparam ResultType The result of invoking this.
 	 *	@tparam Args The arguments necessary to invoking this.
 	 */
 	template <bool NoExcept, std::size_t Capacity, std::size_t Alignment, typename ResultType, typename... Args>
-	class inplace_move_only_function
+	class inplace_move_only_function : private inplace_move_only_function_base
 	{
 	public:
 		using result_type = ResultType;
@@ -172,8 +178,13 @@ namespace detail
 		 *	@param callable An invocable to wrap and call from operator().
 		 *	@tparam Callable The type of the given invocable target.
 		 */
-		template <typename Callable,
-			typename = std::enable_if_t<std::is_invocable_r_v<result_type, Callable, Args...>>>
+		template <
+			typename Callable,
+			typename = std::enable_if_t<
+				std::is_invocable_r_v<result_type, Callable, Args...>
+				&& false == std::is_base_of_v<inplace_move_only_function_base, std::decay_t<Callable>>
+			>
+		>
 		inplace_move_only_function(Callable&& callable)
 		{
 			static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "inplace_move_only_function requires nothrow invocable.");
@@ -189,7 +200,7 @@ namespace detail
 			m_vtable->m_dtor(&m_storage);
 		}
 
-		/**	Move assigment.
+		/**	Move assignment.
 		 *	@param other The inplace_move_only_function to move into this.
 		 *	@return A reference to this.
 		 */
@@ -215,8 +226,13 @@ namespace detail
 		 *	@return A reference to this.
 		 *	@tparam Callable The type of the given invocable target.
 		 */
-		template <typename Callable,
-			typename = std::enable_if_t<std::is_invocable_r_v<result_type, Callable, Args...>>>
+		template <
+			typename Callable,
+			typename = std::enable_if_t<
+				std::is_invocable_r_v<result_type, Callable, Args...>
+				&& false == std::is_base_of_v<inplace_move_only_function_base, std::decay_t<Callable>>
+			>
+		>
 		inplace_move_only_function& operator=(Callable&& callable) noexcept
 		{
 			static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "inplace_move_only_function requires nothrow invocable.");
@@ -242,6 +258,7 @@ namespace detail
 		/**	Test if this is callable.
 		 *	@return True if this is non-null and callable via operator().
 		 */
+		[[nodiscard]]
 		constexpr explicit operator bool() const noexcept
 		{
 			return m_vtable != &null_vtable();
@@ -249,6 +266,7 @@ namespace detail
 		/**	Test if this is null.
 		 *	@detail True if this is null and calling operator() will result in undefined behavior.
 		 */
+		[[nodiscard]]
 		constexpr bool operator==(std::nullptr_t) const noexcept
 		{
 			return m_vtable == &null_vtable();
@@ -256,6 +274,7 @@ namespace detail
 		/**	Test if this is non-null.
 		 *	@return True if this is non-null and callable via operator().
 		 */
+		[[nodiscard]]
 		constexpr bool operator!=(std::nullptr_t) const noexcept
 		{
 			return m_vtable != &null_vtable();
@@ -266,10 +285,7 @@ namespace detail
 		 */
 		void swap(inplace_move_only_function& other) noexcept
 		{
-			storage_type temp;
-			m_vtable->m_move(&temp, &m_storage);
-			other.m_vtable->m_move(&m_storage, &other.m_storage);
-			m_vtable->m_move(&other.m_storage, &temp);
+			std::swap(m_storage.m_inplace, other.m_storage.m_inplace);
 			std::swap(m_vtable, other.m_vtable);
 		}
 		/**	Swap the two given inplace_move_only_function objects.
@@ -307,7 +323,7 @@ namespace detail
 		 */
 		static const vtable_type& null_vtable() noexcept
 		{
-			const static vtable_type instance{ nullptr };
+			static const vtable_type instance{ nullptr };
 			return instance;
 		}
 
@@ -320,19 +336,19 @@ namespace detail
 		mutable storage_type m_storage;
 	};
 
-} // namespace detail
+} // namespace sh::detail
 
 /**	Implements a nullable, callable wrapper of an invocable that may only be moved and is stored in-place.
  *	@tparam Signature The function signature.
  *	@tparam Capacity The number of in-place storage bytes.
- *	@tparam Alignment The alighment of the in-place storage in bytes.
+ *	@tparam Alignment The alignment of the in-place storage in bytes.
  */
 template <typename Signature, std::size_t Capacity, std::size_t Alignment = alignof(void*)>
 class inplace_move_only_function;
 
 /**	Implements a nullable, callable wrapper of an invocable that may only be moved and is stored in-place.
  *	@tparam Capacity The number of in-place storage bytes.
- *	@tparam Alignment The alighment of the in-place storage in bytes.
+ *	@tparam Alignment The alignment of the in-place storage in bytes.
  *	@tparam ResultType The result of calling this.
  *	@tparam Args The arguments necessary to call this.
  */
@@ -346,7 +362,7 @@ public:
 
 /**	Implements a nullable, callable wrapper of a nothrow invocable that may only be moved and is stored in-place.
  *	@tparam Capacity The number of in-place storage bytes.
- *	@tparam Alignment The alighment of the in-place storage in bytes.
+ *	@tparam Alignment The alignment of the in-place storage in bytes.
  *	@tparam ResultType The result of calling this.
  *	@tparam Args The arguments necessary to call this.
  */

@@ -81,42 +81,161 @@ TEST(sh_copyable_function, ctor_nullptr)
 	EXPECT_FALSE(bool(x));
 	EXPECT_EQ(x, nullptr);
 }
-TEST(sh_copyable_function, ctor_move)
+TEST(sh_copyable_function, ctor_copy_small)
 {
 	int value = 0;
+	int calls = 0;
 	{
-		auto lambda = [c = counter(&value)]() { };
-
-		copyable_function<void()> x(std::move(lambda));
+		auto lambda = [c = counter(&value), &calls]() { ++calls; };
+		static_assert(sizeof(lambda) <= sh::detail::copyable_function_storage::capacity, "small test isn't storing small callable.");
+		copyable_function<void()> x{ std::move(lambda) };
 		ASSERT_TRUE(bool(x));
 		ASSERT_NE(x, nullptr);
 		EXPECT_EQ(value, 1);
 
-		copyable_function<void()> y = std::move(x);
-		ASSERT_FALSE(bool(x));
-		ASSERT_EQ(x, nullptr);
-		ASSERT_TRUE(bool(y));
-		ASSERT_NE(y, nullptr);
-		EXPECT_EQ(value, 1);
+		copyable_function<void()> y = x;
+		ASSERT_TRUE(bool(x));
+		ASSERT_NE(x, nullptr);
+		EXPECT_EQ(value, 2);
+
+		x();
+		EXPECT_EQ(calls, 1);
+		y();
+		EXPECT_EQ(calls, 2);
 	}
 	EXPECT_EQ(value, 0);
 }
-TEST(sh_copyable_function, assign)
+TEST(sh_copyable_function, ctor_copy_large)
 {
-	auto lambda = []() { return 'x'; };
+	int value = 0;
+	int calls = 0;
+	{
+		int values[64] = { 1, 0 };
+		auto lambda = [c = counter(&value), &calls, values]() { ++calls; };
+		static_assert(sizeof(lambda) > sh::detail::copyable_function_storage::capacity, "large test isn't storing large callable.");
+		copyable_function<void()> x{ std::move(lambda) };
+		ASSERT_TRUE(bool(x));
+		ASSERT_NE(x, nullptr);
+		EXPECT_EQ(value, 1);
+
+		copyable_function<void()> y = x;
+		ASSERT_TRUE(bool(x));
+		ASSERT_NE(x, nullptr);
+		EXPECT_EQ(value, 2);
+
+		x();
+		EXPECT_EQ(calls, 1);
+		y();
+		EXPECT_EQ(calls, 2);
+	}
+	EXPECT_EQ(value, 0);
+}
+TEST(sh_copyable_function, ctor_move_small)
+{
+	int value = 0;
+	int calls = 0;
+	{
+		auto lambda = [c = counter(&value), &calls]() { ++calls; };
+		static_assert(sizeof(lambda) <= sh::detail::copyable_function_storage::capacity, "small test isn't storing small callable.");
+		copyable_function<void()> x{ std::move(lambda) };
+		ASSERT_NE(x, nullptr);
+		EXPECT_EQ(value, 1);
+
+		x();
+		EXPECT_EQ(calls, 1);
+
+		copyable_function<void()> y = std::move(x);
+		EXPECT_FALSE(bool(x));
+		EXPECT_EQ(x, nullptr);
+
+		ASSERT_TRUE(bool(y));
+		ASSERT_NE(y, nullptr);
+		EXPECT_EQ(value, 1);
+
+		y();
+		EXPECT_EQ(calls, 2);
+	}
+	EXPECT_EQ(value, 0);
+}
+TEST(sh_copyable_function, ctor_move_large)
+{
+	int value = 0;
+	int calls = 0;
+	{
+		int values[64] = { 1, 0 };
+		auto lambda = [c = counter(&value), &calls, values]() { ++calls; };
+		static_assert(sizeof(lambda) > sh::detail::copyable_function_storage::capacity, "large test isn't storing large callable.");
+		copyable_function<void()> x{ std::move(lambda) };
+		ASSERT_NE(x, nullptr);
+		EXPECT_EQ(value, 1);
+
+		x();
+		EXPECT_EQ(calls, 1);
+
+		copyable_function<void()> y = std::move(x);
+		EXPECT_FALSE(bool(x));
+		EXPECT_EQ(x, nullptr);
+
+		ASSERT_TRUE(bool(y));
+		ASSERT_NE(y, nullptr);
+		EXPECT_EQ(value, 1);
+
+		y();
+		EXPECT_EQ(calls, 2);
+	}
+	EXPECT_EQ(value, 0);
+}
+TEST(sh_copyable_function, assign_small)
+{
 	copyable_function<char()> x;
 	ASSERT_FALSE(bool(x));
 	ASSERT_EQ(x, nullptr);
 
+	auto lambda = []() { return 'x'; };
+	static_assert(sizeof(lambda) <= sh::detail::copyable_function_storage::capacity, "small test isn't storing small callable.");
 	x = std::move(lambda);
 	ASSERT_TRUE(bool(x));
 	ASSERT_NE(x, nullptr);
-	ASSERT_EQ(x(), 'x');
+	EXPECT_EQ(x(), 'x');
 }
-TEST(sh_copyable_function, assign_nullptr)
+TEST(sh_copyable_function, assign_large)
+{
+	copyable_function<char()> x;
+	ASSERT_FALSE(bool(x));
+	ASSERT_EQ(x, nullptr);
+
+	int values[64] = { 1, 0 };
+	auto lambda = [values]() { return 'x'; };
+	static_assert(sizeof(lambda) > sh::detail::copyable_function_storage::capacity, "large test isn't storing large callable.");
+	x = std::move(lambda);
+	ASSERT_TRUE(bool(x));
+	ASSERT_NE(x, nullptr);
+	EXPECT_EQ(x(), 'x');
+}
+TEST(sh_copyable_function, assign_nullptr_small)
 {
 	int value = 0;
 	auto lambda = [c = counter(&value)]() { return 'x'; };
+	static_assert(sizeof(lambda) <= sh::detail::copyable_function_storage::capacity, "small test isn't storing small callable.");
+
+	copyable_function<char()> x{ std::move(lambda) };
+	ASSERT_TRUE(bool(x));
+	ASSERT_NE(x, nullptr);
+	ASSERT_EQ(x(), 'x');
+	EXPECT_EQ(value, 1);
+
+	x = nullptr;
+	ASSERT_FALSE(bool(x));
+	ASSERT_EQ(x, nullptr);
+	EXPECT_EQ(value, 0);
+}
+TEST(sh_copyable_function, assign_nullptr_large)
+{
+	int value = 0;
+	int values[64] = { 1, 0 };
+	auto lambda = [c = counter(&value), values]() { return 'x'; };
+	static_assert(sizeof(lambda) > sh::detail::copyable_function_storage::capacity, "large test isn't storing large callable.");
+
 	copyable_function<char()> x(std::move(lambda));
 	ASSERT_TRUE(bool(x));
 	ASSERT_NE(x, nullptr);
@@ -128,12 +247,14 @@ TEST(sh_copyable_function, assign_nullptr)
 	ASSERT_EQ(x, nullptr);
 	EXPECT_EQ(value, 0);
 }
-TEST(sh_copyable_function, assign_move)
+TEST(sh_copyable_function, assign_move_small_small)
 {
 	int a_value = 0, b_value = 0;
 	{
 		auto a_lambda = [c = counter(&a_value)]() { return 'a'; };
+		static_assert(sizeof(a_lambda) <= sh::detail::copyable_function_storage::capacity, "small test isn't storing small callable.");
 		auto b_lambda = [c = counter(&b_value)]() { return 'b'; };
+		static_assert(sizeof(b_lambda) <= sh::detail::copyable_function_storage::capacity, "small test isn't storing small callable.");
 
 		copyable_function<char()> x(std::move(a_lambda));
 		ASSERT_TRUE(bool(x));
@@ -159,11 +280,114 @@ TEST(sh_copyable_function, assign_move)
 	EXPECT_EQ(a_value, 0);
 	EXPECT_EQ(b_value, 0);
 }
-TEST(sh_copyable_function, swap_empty)
+TEST(sh_copyable_function, assign_move_small_large)
+{
+	int a_value = 0, b_value = 0;
+	{
+		auto a_lambda = [c = counter(&a_value)]() { return 'a'; };
+		static_assert(sizeof(a_lambda) <= sh::detail::copyable_function_storage::capacity, "small test isn't storing small callable.");
+		int values[64] = { 1, 0 };
+		auto b_lambda = [c = counter(&b_value), values]() { return 'b'; };
+		static_assert(sizeof(b_lambda) > sh::detail::copyable_function_storage::capacity, "large test isn't storing large callable.");
+
+		copyable_function<char()> x(std::move(a_lambda));
+		ASSERT_TRUE(bool(x));
+		ASSERT_NE(x, nullptr);
+		ASSERT_EQ(x(), 'a');
+		EXPECT_EQ(a_value, 1);
+
+		copyable_function<char()> y(std::move(b_lambda));
+		ASSERT_TRUE(bool(y));
+		ASSERT_NE(y, nullptr);
+		ASSERT_EQ(y(), 'b');
+		EXPECT_EQ(b_value, 1);
+
+		y = std::move(x);
+		ASSERT_FALSE(bool(x));
+		ASSERT_EQ(x, nullptr);
+		ASSERT_TRUE(bool(y));
+		ASSERT_NE(y, nullptr);
+		EXPECT_EQ(a_value, 1);
+		EXPECT_EQ(b_value, 0);
+		EXPECT_EQ(y(), 'a');
+	}
+	EXPECT_EQ(a_value, 0);
+	EXPECT_EQ(b_value, 0);
+}
+TEST(sh_copyable_function, assign_move_large_small)
+{
+	int a_value = 0, b_value = 0;
+	{
+		int values[64] = { 1, 0 };
+		auto a_lambda = [c = counter(&a_value), values]() { return 'a'; };
+		static_assert(sizeof(a_lambda) > sh::detail::copyable_function_storage::capacity, "large test isn't storing large callable.");
+		auto b_lambda = [c = counter(&b_value)]() { return 'b'; };
+		static_assert(sizeof(b_lambda) <= sh::detail::copyable_function_storage::capacity, "small test isn't storing small callable.");
+
+		copyable_function<char()> x(std::move(a_lambda));
+		ASSERT_TRUE(bool(x));
+		ASSERT_NE(x, nullptr);
+		ASSERT_EQ(x(), 'a');
+		EXPECT_EQ(a_value, 1);
+
+		copyable_function<char()> y(std::move(b_lambda));
+		ASSERT_TRUE(bool(y));
+		ASSERT_NE(y, nullptr);
+		ASSERT_EQ(y(), 'b');
+		EXPECT_EQ(b_value, 1);
+
+		y = std::move(x);
+		ASSERT_FALSE(bool(x));
+		ASSERT_EQ(x, nullptr);
+		ASSERT_TRUE(bool(y));
+		ASSERT_NE(y, nullptr);
+		EXPECT_EQ(a_value, 1);
+		EXPECT_EQ(b_value, 0);
+		EXPECT_EQ(y(), 'a');
+	}
+	EXPECT_EQ(a_value, 0);
+	EXPECT_EQ(b_value, 0);
+}
+TEST(sh_copyable_function, assign_move_large_large)
+{
+	int a_value = 0, b_value = 0;
+	{
+		int values[64] = { 1, 0 };
+		auto a_lambda = [c = counter(&a_value), values]() { return 'a'; };
+		static_assert(sizeof(a_lambda) > sh::detail::copyable_function_storage::capacity, "large test isn't storing large callable.");
+		auto b_lambda = [c = counter(&b_value), values]() { return 'b'; };
+		static_assert(sizeof(b_lambda) > sh::detail::copyable_function_storage::capacity, "large test isn't storing large callable.");
+
+		copyable_function<char()> x(std::move(a_lambda));
+		ASSERT_TRUE(bool(x));
+		ASSERT_NE(x, nullptr);
+		ASSERT_EQ(x(), 'a');
+		EXPECT_EQ(a_value, 1);
+
+		copyable_function<char()> y(std::move(b_lambda));
+		ASSERT_TRUE(bool(y));
+		ASSERT_NE(y, nullptr);
+		ASSERT_EQ(y(), 'b');
+		EXPECT_EQ(b_value, 1);
+
+		y = std::move(x);
+		ASSERT_FALSE(bool(x));
+		ASSERT_EQ(x, nullptr);
+		ASSERT_TRUE(bool(y));
+		ASSERT_NE(y, nullptr);
+		EXPECT_EQ(a_value, 1);
+		EXPECT_EQ(b_value, 0);
+		EXPECT_EQ(y(), 'a');
+	}
+	EXPECT_EQ(a_value, 0);
+	EXPECT_EQ(b_value, 0);
+}
+TEST(sh_copyable_function, swap_small)
 {
 	int value = 0;
 	{
 		auto lambda = [c = counter(&value)]() { };
+		static_assert(sizeof(lambda) <= sh::detail::copyable_function_storage::capacity, "small test isn't storing small callable.");
 
 		copyable_function<void()> x(std::move(lambda));
 		ASSERT_TRUE(bool(x));
@@ -184,12 +408,41 @@ TEST(sh_copyable_function, swap_empty)
 	}
 	EXPECT_EQ(value, 0);
 }
-TEST(sh_copyable_function, swap)
+TEST(sh_copyable_function, swap_large)
+{
+	int value = 0;
+	{
+		int values[64] = { 1, 0 };
+		auto lambda = [c = counter(&value), values]() { };
+		static_assert(sizeof(lambda) > sh::detail::copyable_function_storage::capacity, "large test isn't storing large callable.");
+
+		copyable_function<void()> x(std::move(lambda));
+		ASSERT_TRUE(bool(x));
+		ASSERT_NE(x, nullptr);
+		EXPECT_EQ(value, 1);
+
+		copyable_function<void()> y;
+		ASSERT_FALSE(bool(y));
+		ASSERT_EQ(y, nullptr);
+		EXPECT_EQ(value, 1);
+
+		x.swap(y);
+		EXPECT_FALSE(bool(x));
+		EXPECT_EQ(x, nullptr);
+		EXPECT_TRUE(bool(y));
+		EXPECT_NE(y, nullptr);
+		EXPECT_EQ(value, 1);
+	}
+	EXPECT_EQ(value, 0);
+}
+TEST(sh_copyable_function, swap_move_small_small)
 {
 	int a_value = 0, b_value = 0;
 	{
 		auto a_lambda = [c = counter(&a_value)]() { return 'a'; };
+		static_assert(sizeof(a_lambda) <= sh::detail::copyable_function_storage::capacity, "small test isn't storing small callable.");
 		auto b_lambda = [c = counter(&b_value)]() { return 'b'; };
+		static_assert(sizeof(b_lambda) <= sh::detail::copyable_function_storage::capacity, "small test isn't storing small callable.");
 
 		copyable_function<char()> x(std::move(a_lambda));
 		ASSERT_TRUE(bool(x));
@@ -216,6 +469,112 @@ TEST(sh_copyable_function, swap)
 	EXPECT_EQ(a_value, 0);
 	EXPECT_EQ(b_value, 0);
 }
+TEST(sh_copyable_function, swap_move_small_large)
+{
+	int a_value = 0, b_value = 0;
+	{
+		auto a_lambda = [c = counter(&a_value)]() { return 'a'; };
+		static_assert(sizeof(a_lambda) <= sh::detail::copyable_function_storage::capacity, "small test isn't storing small callable.");
+		int values[64] = { 1, 0 };
+		auto b_lambda = [c = counter(&b_value), values]() { return 'b'; };
+		static_assert(sizeof(b_lambda) > sh::detail::copyable_function_storage::capacity, "large test isn't storing large callable.");
+
+		copyable_function<char()> x(std::move(a_lambda));
+		ASSERT_TRUE(bool(x));
+		ASSERT_NE(x, nullptr);
+		ASSERT_EQ(x(), 'a');
+		EXPECT_EQ(a_value, 1);
+
+		copyable_function<char()> y(std::move(b_lambda));
+		ASSERT_TRUE(bool(y));
+		ASSERT_NE(y, nullptr);
+		ASSERT_EQ(y(), 'b');
+		EXPECT_EQ(b_value, 1);
+
+		x.swap(y);
+		EXPECT_TRUE(bool(x));
+		EXPECT_NE(x, nullptr);
+		EXPECT_TRUE(bool(y));
+		EXPECT_NE(y, nullptr);
+		EXPECT_EQ(a_value, 1);
+		EXPECT_EQ(b_value, 1);
+		EXPECT_EQ(x(), 'b');
+		EXPECT_EQ(y(), 'a');
+	}
+	EXPECT_EQ(a_value, 0);
+	EXPECT_EQ(b_value, 0);
+}
+TEST(sh_copyable_function, swap_move_large_small)
+{
+	int a_value = 0, b_value = 0;
+	{
+		int values[64] = { 1, 0 };
+		auto a_lambda = [c = counter(&a_value), values]() { return 'a'; };
+		static_assert(sizeof(a_lambda) > sh::detail::copyable_function_storage::capacity, "large test isn't storing large callable.");
+		auto b_lambda = [c = counter(&b_value)]() { return 'b'; };
+		static_assert(sizeof(b_lambda) <= sh::detail::copyable_function_storage::capacity, "small test isn't storing small callable.");
+
+		copyable_function<char()> x(std::move(a_lambda));
+		ASSERT_TRUE(bool(x));
+		ASSERT_NE(x, nullptr);
+		ASSERT_EQ(x(), 'a');
+		EXPECT_EQ(a_value, 1);
+
+		copyable_function<char()> y(std::move(b_lambda));
+		ASSERT_TRUE(bool(y));
+		ASSERT_NE(y, nullptr);
+		ASSERT_EQ(y(), 'b');
+		EXPECT_EQ(b_value, 1);
+
+		x.swap(y);
+		EXPECT_TRUE(bool(x));
+		EXPECT_NE(x, nullptr);
+		EXPECT_TRUE(bool(y));
+		EXPECT_NE(y, nullptr);
+		EXPECT_EQ(a_value, 1);
+		EXPECT_EQ(b_value, 1);
+		EXPECT_EQ(x(), 'b');
+		EXPECT_EQ(y(), 'a');
+	}
+	EXPECT_EQ(a_value, 0);
+	EXPECT_EQ(b_value, 0);
+}
+TEST(sh_copyable_function, swap_move_large_large)
+{
+	int a_value = 0, b_value = 0;
+	{
+		int values[64] = { 1, 0 };
+		auto a_lambda = [c = counter(&a_value), values]() { return 'a'; };
+		static_assert(sizeof(a_lambda) > sh::detail::copyable_function_storage::capacity, "large test isn't storing large callable.");
+		auto b_lambda = [c = counter(&b_value), values]() { return 'b'; };
+		static_assert(sizeof(b_lambda) > sh::detail::copyable_function_storage::capacity, "large test isn't storing large callable.");
+
+		copyable_function<char()> x(std::move(a_lambda));
+		ASSERT_TRUE(bool(x));
+		ASSERT_NE(x, nullptr);
+		ASSERT_EQ(x(), 'a');
+		EXPECT_EQ(a_value, 1);
+
+		copyable_function<char()> y(std::move(b_lambda));
+		ASSERT_TRUE(bool(y));
+		ASSERT_NE(y, nullptr);
+		ASSERT_EQ(y(), 'b');
+		EXPECT_EQ(b_value, 1);
+
+		x.swap(y);
+		EXPECT_TRUE(bool(x));
+		EXPECT_NE(x, nullptr);
+		EXPECT_TRUE(bool(y));
+		EXPECT_NE(y, nullptr);
+		EXPECT_EQ(a_value, 1);
+		EXPECT_EQ(b_value, 1);
+		EXPECT_EQ(x(), 'b');
+		EXPECT_EQ(y(), 'a');
+	}
+	EXPECT_EQ(a_value, 0);
+	EXPECT_EQ(b_value, 0);
+}
+
 TEST(sh_copyable_function, call)
 {
 	bool called = false;
@@ -237,7 +596,7 @@ TEST(sh_copyable_function, func_ptr)
 	ASSERT_NE(x, nullptr);
 	EXPECT_EQ(x(0), 1);
 }
-TEST(sh_copyable_function, functor)
+TEST(sh_copyable_function, functor_small)
 {
 	struct plus_2 final
 	{
@@ -249,10 +608,31 @@ TEST(sh_copyable_function, functor)
 			return input + 2;
 		}
 	};
+	static_assert(sizeof(plus_2) <= sh::detail::copyable_function_storage::capacity, "functor_small test isn't storing small callable.");
 	const copyable_function<int(int)> x(plus_2{});
 	ASSERT_TRUE(bool(x));
 	ASSERT_NE(x, nullptr);
 	EXPECT_EQ(x(0), 2);
+}
+TEST(sh_copyable_function, functor_large)
+{
+	struct plus_values final
+	{
+		int values[64] = { 1, 0 };
+		int operator()(int input) const
+		{
+			for (std::size_t index = 0; values[index] != 0; ++index)
+			{
+				input += values[index];
+			}
+			return input;
+		}
+	};
+	static_assert(sizeof(plus_values) > sh::detail::copyable_function_storage::capacity, "functor_large test isn't storing large callable.");
+	copyable_function<int(int)> x(plus_values{});
+	ASSERT_TRUE(bool(x));
+	ASSERT_NE(x, nullptr);
+	EXPECT_EQ(x(0), 1);
 }
 TEST(sh_copyable_function, functor_const)
 {
@@ -268,7 +648,7 @@ TEST(sh_copyable_function, functor_const)
 	ASSERT_NE(x, nullptr);
 	EXPECT_EQ(x(0), 2);
 }
-TEST(sh_copyable_function, lambda)
+TEST(sh_copyable_function, lambda_small)
 {
 	auto plus_3 = [
 		three = 3
@@ -276,10 +656,28 @@ TEST(sh_copyable_function, lambda)
 	{
 		return input + three;
 	};
+	static_assert(sizeof(plus_3) <= sh::detail::copyable_function_storage::capacity, "lambda_small test isn't storing small callable.");
 	copyable_function<int(int)> x(std::move(plus_3));
 	ASSERT_TRUE(bool(x));
 	ASSERT_NE(x, nullptr);
 	EXPECT_EQ(x(0), 3);
+}
+TEST(sh_copyable_function, lambda_large)
+{
+	int values[64] = { 1, 0 };
+	auto plus_values = [values](int input) -> int
+	{
+		for (std::size_t index = 0; values[index] != 0; ++index)
+		{
+			input += values[index];
+		}
+		return input;
+	};
+	static_assert(sizeof(plus_values) > sh::detail::copyable_function_storage::capacity, "lambda_large test isn't storing large callable.");
+	copyable_function<int(int)> x(std::move(plus_values));
+	ASSERT_TRUE(bool(x));
+	ASSERT_NE(x, nullptr);
+	EXPECT_EQ(x(0), 1);
 }
 TEST(sh_copyable_function, lambda_mutable)
 {

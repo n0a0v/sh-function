@@ -47,23 +47,42 @@ namespace sh
 
 namespace detail
 {
+	// Forward declaration so that function_ptr may construct & assign from function_ref.
+	template <bool NoExcept, typename ResultType, typename... Args>
+	class function_ptr;
+
+	/**	Non-templated base of function_ref (and similar).
+	 */
+	struct function_ref_base
+	{ };
+
 	/**	A function at which to point m_invoke_target to invoke the given target argument as a Callable type object.
 	 *	@param target A pointer value from m_target to cast to Callable.
 	 *	@param args The arguments to pass to m_target.
 	 *	@return The result of invoking Callable.
 	 *	@tparam Callable The type to which to cast target in order to invoke it.
-	 *	@tparam NoExcept True if this targeting a nothrow invocable and false otherwise.
+	 *	@tparam NoExcept True if this is targeting a nothrow invocable and false otherwise.
 	 *	@tparam ResultType The result of calling this.
 	 *	@tparam Args The arguments necessary to call this.
 	 */
 	template <typename Callable, bool NoExcept, typename ResultType, typename... Args>
-	static ResultType function_ref_invoke_target(void* const target, Args... args) noexcept(NoExcept)
+	constexpr ResultType function_ref_invoke_target(void* const target, Args... args) noexcept(NoExcept)
 	{
 		// Clang 15 had issues with making this a member of function_ref and inheriting the template parameters.
+		static_assert(std::is_pointer_v<Callable>);
+		static_assert(false == std::is_base_of_v<function_ref_base, std::remove_pointer_t<Callable>>,
+			"Should not allow a function_ref to reference another function_ref or similar.");
 		assert(target != nullptr);
-		return std::invoke(
-			*reinterpret_cast<Callable>(target),
-			std::forward<Args>(args)...);
+		if constexpr (std::is_function_v<std::remove_pointer_t<Callable>>)
+		{
+			// Must reinterpret_cast from void to function pointer.
+			return std::invoke(*reinterpret_cast<Callable>(target), std::forward<Args>(args)...);
+		}
+		else
+		{
+			// Can static_cast from void to other callable type.
+			return std::invoke(*static_cast<Callable>(target), std::forward<Args>(args)...);
+		}
 	}
 
 	/**	Implements a (mostly) non-nullable, callable reference to an invocable target.
@@ -73,7 +92,7 @@ namespace detail
 	 *	@tparam Args The arguments necessary to call this.
 	 */
 	template <bool NoExcept, typename ResultType, typename... Args>
-	class function_ref
+	class function_ref : private function_ref_base
 	{
 	public:
 		using result_type = ResultType;
@@ -94,20 +113,42 @@ namespace detail
 		 */
 		template <typename Callable,
 			typename = std::enable_if_t<
+				// Ensure callable is signature compatible.
 				std::is_invocable_r_v<result_type, Callable&&, Args...>
-				&& false == std::is_same_v<std::decay_t<Callable>, function_ref>
+				// function_ref is non-nullable, refuse function_ptr. Copies of
+				// function_ref will be handled by the copy constructor.
+				&& false == std::is_base_of_v<detail::function_ref_base, std::decay_t<Callable>>
+				// function_ref is non-nullable, refuse pointers.
 				&& false == std::is_pointer_v<Callable>
+				// Refuse member pointers.
 				&& false == std::is_member_function_pointer_v<Callable>
 				&& false == std::is_member_object_pointer_v<Callable>
 			>
 		>
 		constexpr function_ref(Callable&& callable) noexcept
 			: m_invoke_target{ &detail::function_ref_invoke_target<std::add_pointer_t<Callable>, NoExcept, result_type, Args...> }
-			, m_target{ const_cast<void*>(reinterpret_cast<const void*>(std::addressof(callable))) }
 		{
 			static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "function_ref requires nothrow invocable.");
+			if constexpr (std::is_function_v<std::remove_reference_t<Callable>>)
+			{
+				m_target = const_cast<void*>(reinterpret_cast<const void*>(std::addressof(callable)));
+			}
+			else
+			{
+				m_target = const_cast<void*>(static_cast<const void*>(std::addressof(callable)));
+			}
 		}
-
+		/**	Constructor from another type of function_ref.
+		 *	@param other The function_ref to copy.
+		 */
+		template <bool OtherNoExcept,
+			bool ThisNoExcept = NoExcept,
+			typename = std::enable_if_t<ThisNoExcept == false && OtherNoExcept == true>
+		>
+		constexpr function_ref(const function_ref<OtherNoExcept, ResultType, Args...>& other) noexcept
+			: m_target{ other.m_target }
+			, m_invoke_target{ other.m_invoke_target }
+		{ }
 		/**	Invoke the referenced callable.
 		 *	@param args The arguments to pass to the pointed-to callable.
 		 *	@tparam OperatorArgs The arguments to forward to m_invoke_target.
@@ -120,22 +161,27 @@ namespace detail
 		}
 
 	private:
+		template <bool OtherNoExcept, typename OtherResultType, typename... OtherArgs>
+		friend class ::sh::detail::function_ref;
+		template <bool OtherNoExcept, typename OtherResultType, typename... OtherArgs>
+		friend class ::sh::detail::function_ptr;
+
 		/**	The function pointer type of m_invoke_target.
 		 *	@details Accepts m_target as its first argument followed by "Args..." and returns return_type.
 		 */
 		using invoke_target_type = result_type(*)(void*, Args...) noexcept(NoExcept);
 
-		/**	A function pointer equal to nullptr or a specialization of &detail::function_ref_invoke_target.
-		 *	@details Non-null. Accepts m_target as its first argument followed by "Args..." and returns return_type.
-		 */
-		invoke_target_type m_invoke_target;
 		/**	A pointer value used by m_invoke_target to call a given callable object.
 		 *	@details Non-null.
 		 */
 		void* m_target;
+		/**	A function pointer equal to nullptr or a specialization of &detail::function_ref_invoke_target.
+		 *	@details Non-null. Accepts m_target as its first argument followed by "Args..." and returns return_type.
+		 */
+		invoke_target_type m_invoke_target;
 	};
 
-} // namespace detail
+} // namespace sh::detail
 
 /**	Implements a (mostly) non-nullable, callable reference to an invocable target.
  *	@tparam Signature The function signature.

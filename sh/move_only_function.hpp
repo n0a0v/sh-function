@@ -41,6 +41,7 @@
 #include <cstddef>
 #include <exception>
 #include <functional>
+#include <new>
 #include <type_traits>
 #include <utility>
 
@@ -71,7 +72,7 @@ namespace detail
 		 *	@detail If the type is too large, it must be stored in externally
 		 *	allocated memory. If the type is not nothrow move constructible,
 		 *	move_only_function cannot assume that it's safe to move and remain
-		 *	itself nothrow movable, hence it will likewise require storaging in
+		 *	itself nothrow movable, hence it will likewise require storing in
 		 *	externally allocate memory.
 		 */
 		template <typename Callable>
@@ -175,6 +176,33 @@ namespace detail
 		move_only_function_vtable& operator=(move_only_function_vtable&&) = delete;
 	};
 
+	/**	Swap function for move_only_function_storage.
+	 *	@tparam NoExcept True if this wraps a nothrow invocable and false otherwise.
+	 *	@tparam ResultType The result of invoking this.
+	 *	@tparam Args The arguments necessary to invoking this.
+	 *	@param lstorage The left storage.
+	 *	@param lvtable The left vtable.
+	 *	@param rstorage The right storage.
+	 *	@param rvtable The right vtable.
+	 */
+	template <bool NoExcept, typename ResultType, typename... Args>
+	void swap(
+		move_only_function_storage& lstorage, const move_only_function_vtable<NoExcept, ResultType, Args...>& lvtable,
+		move_only_function_storage& rstorage, const move_only_function_vtable<NoExcept, ResultType, Args...>& rvtable)
+	{
+		move_only_function_storage temp;
+
+		//             dst,      src           temp = ?, l = l, r = r
+		lvtable.m_move(temp,     lstorage); // temp = l, l = ?, r = r
+		rvtable.m_move(lstorage, rstorage); // temp = l, l = r, r = ?
+		lvtable.m_move(rstorage, temp);     // temp = ?, l = r, r = l
+	}
+
+	/**	Non-templated base of move_only_function.
+	 */
+	struct move_only_function_base
+	{ };
+
 	/**	Implements a nullable, callable wrapper of an invocable that may only be moved.
 	 *	@note Required as MSVC does not support deduction of function signature noexcept in template specialization.
 	 *	@tparam NoExcept True if this wraps a nothrow invocable and false otherwise.
@@ -182,7 +210,7 @@ namespace detail
 	 *	@tparam Args The arguments necessary to invoking this.
 	 */
 	template <bool NoExcept, typename ResultType, typename... Args>
-	class move_only_function
+	class move_only_function : private move_only_function_base
 	{
 	public:
 		using result_type = ResultType;
@@ -214,8 +242,13 @@ namespace detail
 		 *	@param callable An invocable to wrap and call from operator().
 		 *	@tparam Callable The type of the given invocable target.
 		 */
-		template <typename Callable,
-			typename = std::enable_if_t<std::is_invocable_r_v<result_type, Callable, Args...>>>
+		template <
+			typename Callable,
+			typename = std::enable_if_t<
+				std::is_invocable_r_v<result_type, Callable, Args...>
+				&& false == std::is_base_of_v<move_only_function_base, std::decay_t<Callable>>
+			>
+		>
 		move_only_function(Callable&& callable)
 		{
 			static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "move_only_function requires nothrow invocable.");
@@ -237,7 +270,7 @@ namespace detail
 			m_vtable->m_dtor(m_storage);
 		}
 
-		/**	Move assigment.
+		/**	Move assignment.
 		 *	@param other The move_only_function to move into this.
 		 *	@return A reference to this.
 		 */
@@ -254,8 +287,13 @@ namespace detail
 		 *	@return A reference to this.
 		 *	@tparam Callable The type of the given invocable target.
 		 */
-		template <typename Callable,
-			typename = std::enable_if_t<std::is_invocable_r_v<result_type, Callable, Args...>>>
+		template <
+			typename Callable,
+			typename = std::enable_if_t<
+				std::is_invocable_r_v<result_type, Callable, Args...>
+				&& false == std::is_base_of_v<move_only_function_base, std::decay_t<Callable>>
+			>
+		>
 		move_only_function& operator=(Callable&& callable) noexcept
 		{
 			static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "move_only_function requires nothrow invocable.");
@@ -296,6 +334,7 @@ namespace detail
 		/**	Test if this is callable.
 		 *	@return True if this is non-null and callable via operator().
 		 */
+		[[nodiscard]]
 		constexpr explicit operator bool() const noexcept
 		{
 			return m_vtable != &null_vtable();
@@ -303,6 +342,7 @@ namespace detail
 		/**	Test if this is null.
 		 *	@detail True if this is null and calling operator() will result in undefined behavior.
 		 */
+		[[nodiscard]]
 		constexpr bool operator==(std::nullptr_t) const noexcept
 		{
 			return m_vtable == &null_vtable();
@@ -310,6 +350,7 @@ namespace detail
 		/**	Test if this is non-null.
 		 *	@return True if this is non-null and callable via operator().
 		 */
+		[[nodiscard]]
 		constexpr bool operator!=(std::nullptr_t) const noexcept
 		{
 			return m_vtable != &null_vtable();
@@ -320,11 +361,11 @@ namespace detail
 		 */
 		void swap(move_only_function& other) noexcept
 		{
-			detail::move_only_function_storage temp;
-			m_vtable->m_move(temp, m_storage);
-			other.m_vtable->m_move(m_storage, other.m_storage);
-			m_vtable->m_move(other.m_storage, temp);
-			std::swap(m_vtable, other.m_vtable);
+			if (this != &other)
+			{
+				::sh::detail::swap<NoExcept, ResultType, Args...>(m_storage, *m_vtable, other.m_storage, *other.m_vtable);
+				std::swap(m_vtable, other.m_vtable);
+			}
 		}
 		/**	Swap the two given move_only_function objects.
 		 *	@param lhs The move_only_function with which to swap contents with rhs.
@@ -354,7 +395,7 @@ namespace detail
 		 */
 		static const vtable_type& null_vtable() noexcept
 		{
-			const static vtable_type instance{ nullptr };
+			static const vtable_type instance{ nullptr };
 			return instance;
 		}
 
@@ -367,7 +408,7 @@ namespace detail
 		mutable detail::move_only_function_storage m_storage;
 	};
 
-} // namespace detail
+} // namespace sh::detail
 
 /**	Implements a nullable, callable wrapper of an invocable that may only be moved.
  *	@tparam Signature The function signature.

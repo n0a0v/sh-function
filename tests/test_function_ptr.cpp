@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <cstring>
 #include <sh/function_ptr.hpp>
 
 using sh::function_ptr;
+using sh::function_ref;
 
 namespace
 {
@@ -150,6 +152,99 @@ TEST(sh_function_ptr, ctor_call_lambda_noexcept)
 	bool param = false;
 	x(param);
 	EXPECT_TRUE(param);
+
+}
+TEST(sh_function_ptr, ctor_call_function_ptr_nullptr)
+{
+	std::unique_ptr<function_ptr<void(bool&)>> p = std::make_unique<function_ptr<void(bool&)>>(nullptr);
+	function_ptr<void(bool&)> x{ *p };
+
+	// Ensure bad things happen if x is referencing p.
+	static_assert(std::is_trivially_destructible_v<function_ptr<void(bool&)>>);
+	std::memset(p.get(), 0, sizeof(function_ptr<void(bool&)>));
+	p.reset();
+
+	EXPECT_FALSE(bool(x));
+	EXPECT_TRUE(x == nullptr);
+	EXPECT_FALSE(x != nullptr);
+}
+TEST(sh_function_ptr, ctor_call_function_ptr)
+{
+	std::unique_ptr<function_ptr<void(bool&)>> p = std::make_unique<function_ptr<void(bool&)>>(invert_bool);
+	function_ptr<void(bool&)> x{ *p };
+
+	// Ensure bad things happen if x is referencing p.
+	static_assert(std::is_trivially_destructible_v<function_ptr<void(bool&)>>);
+	std::memset(p.get(), 0, sizeof(function_ptr<void(bool&)>));
+	p.reset();
+
+	EXPECT_TRUE(bool(x));
+	EXPECT_FALSE(x == nullptr);
+	EXPECT_TRUE(x != nullptr);
+
+	bool param = false;
+	x(param);
+	EXPECT_TRUE(param);
+}
+TEST(sh_function_ptr, ctor_call_function_ptr_noexcept)
+{
+	std::unique_ptr<function_ptr<void(bool&) noexcept>> p = std::make_unique<function_ptr<void(bool&) noexcept>>(invert_bool_noexcept);
+	function_ptr<void(bool&)> x{ *p };
+
+	static_assert(false == std::is_constructible_v<function_ptr<void(bool&) noexcept>, function_ptr<void(bool&)>>);
+	static_assert(false == std::is_assignable_v<function_ptr<void(bool&) noexcept>&, function_ptr<void(bool&)>>);
+
+	// Ensure bad things happen if x is referencing p.
+	static_assert(std::is_trivially_destructible_v<function_ptr<void(bool&)>>);
+	std::memset(p.get(), 0, sizeof(function_ptr<void(bool&)>));
+	p.reset();
+
+	EXPECT_TRUE(bool(x));
+	EXPECT_FALSE(x == nullptr);
+	EXPECT_TRUE(x != nullptr);
+
+	bool param = false;
+	x(param);
+	EXPECT_TRUE(param);
+}
+TEST(sh_function_ptr, ctor_call_function_ref)
+{
+	std::unique_ptr<function_ref<void(bool&)>> p = std::make_unique<function_ref<void(bool&)>>(invert_bool);
+	function_ptr<void(bool&)> x{ *p };
+
+	// Ensure bad things happen if x is referencing p.
+	static_assert(std::is_trivially_destructible_v<function_ref<void(bool&)>>);
+	std::memset(p.get(), 0, sizeof(function_ref<void(bool&)>));
+	p.reset();
+
+	EXPECT_TRUE(bool(x));
+	EXPECT_FALSE(x == nullptr);
+	EXPECT_TRUE(x != nullptr);
+
+	bool param = false;
+	x(param);
+	EXPECT_TRUE(param);
+}
+TEST(sh_function_ptr, ctor_call_function_ref_noexcept)
+{
+	std::unique_ptr<function_ref<void(bool&) noexcept>> p = std::make_unique<function_ref<void(bool&) noexcept>>(invert_bool_noexcept);
+	function_ptr<void(bool&)> x{ *p };
+
+	static_assert(false == std::is_constructible_v<function_ptr<void(bool&) noexcept>, function_ref<void(bool&)>>);
+	static_assert(false == std::is_assignable_v<function_ptr<void(bool&) noexcept>&, function_ref<void(bool&)>>);
+
+	// Ensure bad things happen if x is referencing p.
+	static_assert(std::is_trivially_destructible_v<function_ref<void(bool&)>>);
+	std::memset(p.get(), 0, sizeof(function_ref<void(bool&)>));
+	p.reset();
+
+	EXPECT_TRUE(bool(x));
+	EXPECT_FALSE(x == nullptr);
+	EXPECT_TRUE(x != nullptr);
+
+	bool param = false;
+	x(param);
+	EXPECT_TRUE(param);
 }
 TEST(sh_function_ptr, assign)
 {
@@ -208,6 +303,68 @@ TEST(sh_function_ptr, assign_noexcept)
 	EXPECT_FALSE(bool(x));
 	EXPECT_TRUE(x == nullptr);
 	EXPECT_FALSE(x != nullptr);
+}
+TEST(sh_function_ptr, assign_call_function_ptr_nullptr)
+{
+	function_ptr<void(bool&)> x{ invert_bool };
+
+	{
+		std::unique_ptr<function_ptr<void(bool&)>> p = std::make_unique<function_ptr<void(bool&)>>(nullptr);
+
+		x = *p;
+
+		// Ensure bad things happen if x is referencing p.
+		static_assert(std::is_trivially_destructible_v<function_ptr<void(bool&)>>);
+		std::memset(p.get(), 0, sizeof(function_ptr<void(bool&)>));
+	}
+
+	EXPECT_FALSE(bool(x));
+	EXPECT_TRUE(x == nullptr);
+	EXPECT_FALSE(x != nullptr);
+}
+TEST(sh_function_ptr, assign_call_function_ptr)
+{
+	function_ptr<void(bool&)> x;
+
+	{
+		std::unique_ptr<function_ptr<void(bool&)>> p = std::make_unique<function_ptr<void(bool&)>>(invert_bool);
+
+		x = *p;
+
+		// Ensure bad things happen if x is referencing p.
+		static_assert(std::is_trivially_destructible_v<function_ptr<void(bool&)>>);
+		std::memset(p.get(), 0, sizeof(function_ptr<void(bool&)>));
+	}
+
+	EXPECT_TRUE(bool(x));
+	EXPECT_FALSE(x == nullptr);
+	EXPECT_TRUE(x != nullptr);
+
+	bool param = false;
+	x(param);
+	EXPECT_TRUE(param);
+}
+TEST(sh_function_ptr, assign_call_function_ref)
+{
+	function_ptr<void(bool&)> x;
+
+	{
+		std::unique_ptr<function_ref<void(bool&)>> p = std::make_unique<function_ref<void(bool&)>>(invert_bool);
+
+		x = *p;
+
+		// Ensure bad things happen if x is referencing p.
+		static_assert(std::is_trivially_destructible_v<function_ref<void(bool&)>>);
+		std::memset(p.get(), 0, sizeof(function_ref<void(bool&)>));
+	}
+
+	EXPECT_TRUE(bool(x));
+	EXPECT_FALSE(x == nullptr);
+	EXPECT_TRUE(x != nullptr);
+
+	bool param = false;
+	x(param);
+	EXPECT_TRUE(param);
 }
 TEST(sh_function_ptr, swap)
 {
