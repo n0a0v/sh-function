@@ -41,6 +41,7 @@
 #include <cstddef>
 #include <exception>
 #include <functional>
+#include <memory>
 #include <new>
 #include <type_traits>
 #include <utility>
@@ -78,7 +79,9 @@ namespace detail
 		template <typename Callable>
 		constexpr static bool store_inplace() noexcept
 		{
-			return sizeof(Callable) <= capacity && std::is_nothrow_move_constructible_v<Callable>;
+			return sizeof(Callable) <= capacity
+				&& alignof(Callable) <= alignment
+				&& std::is_nothrow_move_constructible_v<Callable>;
 		}
 
 		alignas(alignment) std::byte m_inplace[capacity];
@@ -103,13 +106,13 @@ namespace detail
 		const call_type m_call;
 		/**	Destructs the given storage.
 		 */
-		const dtor_type m_dtor;
-		/**	Copies source storage into destination storage.
+		const dtor_type m_destruct;
+		/**	Copy constructs destination storage from source storage.
 		 */
 		const copy_type m_copy;
-		/**	Moves source storage into destination storage and then destructs the source.
+		/**	Move constructs destination storage from source then destructs the source.
 		 */
-		const move_type m_move;
+		const move_type m_move_then_destruct;
 
 		/**	Construct a vtable for an empty copyable_function.
 		 */
@@ -126,11 +129,11 @@ namespace detail
 					throw std::bad_function_call();
 				}
 			} }
-			, m_dtor{ [](copyable_function_storage& storage) noexcept -> void
+			, m_destruct{ [](copyable_function_storage& storage) noexcept -> void
 			{ } }
 			, m_copy{ [](copyable_function_storage& dst_storage, const copyable_function_storage& src_storage) -> void
 			{ } }
-			, m_move{ [](copyable_function_storage& dst_storage, copyable_function_storage& src_storage) noexcept -> void
+			, m_move_then_destruct{ [](copyable_function_storage& dst_storage, copyable_function_storage& src_storage) noexcept -> void
 			{ } }
 		{ }
 
@@ -150,11 +153,11 @@ namespace detail
 					return (*static_cast<Callable*>(storage.m_allocated))(std::forward<Args>(args)...);
 				}
 			} }
-			, m_dtor{ [](copyable_function_storage& storage) noexcept -> void
+			, m_destruct{ [](copyable_function_storage& storage) noexcept -> void
 			{
 				if constexpr (copyable_function_storage::store_inplace<Callable>())
 				{
-					reinterpret_cast<Callable*>(&storage.m_inplace)->~Callable();
+					std::destroy_at<Callable>(&reinterpret_cast<Callable&>(storage.m_inplace));
 				}
 				else
 				{
@@ -172,13 +175,13 @@ namespace detail
 					dst_storage.m_allocated = new Callable{ *reinterpret_cast<const Callable*>(src_storage.m_allocated) };
 				}
 			} }
-			, m_move{ [](copyable_function_storage& dst_storage, copyable_function_storage& src_storage) noexcept -> void
+			, m_move_then_destruct{ [](copyable_function_storage& dst_storage, copyable_function_storage& src_storage) noexcept -> void
 			{
 				if constexpr (copyable_function_storage::store_inplace<Callable>())
 				{
 					static_assert(std::is_nothrow_move_constructible_v<Callable>, "Callable must be nothrow move constructible to store in-place.");
 					new(&dst_storage.m_inplace) Callable{ std::move(reinterpret_cast<Callable&>(src_storage.m_inplace)) };
-					reinterpret_cast<Callable&>(src_storage.m_inplace).~Callable();
+					std::destroy_at<Callable>(&reinterpret_cast<Callable&>(src_storage.m_inplace));
 				}
 				else
 				{
@@ -210,9 +213,9 @@ namespace detail
 		copyable_function_storage temp;
 
 		//             dst,      src           temp = ?, l = l, r = r
-		lvtable.m_move(temp,     lstorage); // temp = l, l = ?, r = r
-		rvtable.m_move(lstorage, rstorage); // temp = l, l = r, r = ?
-		lvtable.m_move(rstorage, temp);     // temp = ?, l = r, r = l
+		lvtable.m_move_then_destruct(temp,     lstorage); // temp = l, l = ?, r = r
+		rvtable.m_move_then_destruct(lstorage, rstorage); // temp = l, l = r, r = ?
+		lvtable.m_move_then_destruct(rstorage, temp);     // temp = ?, l = r, r = l
 	}
 
 	/**	Non-templated base of copyable_function.
@@ -257,7 +260,7 @@ namespace detail
 		copyable_function(copyable_function&& other) noexcept
 			: m_vtable{ std::exchange(other.m_vtable, &null_vtable()) }
 		{
-			m_vtable->m_move(m_storage, other.m_storage);
+			m_vtable->m_move_then_destruct(m_storage, other.m_storage);
 		}
 		/**	Constructor from a given callable.
 		 *	@param callable An invocable to wrap and call from operator().
@@ -288,7 +291,7 @@ namespace detail
 		 */
 		~copyable_function()
 		{
-			m_vtable->m_dtor(m_storage);
+			m_vtable->m_destruct(m_storage);
 		}
 
 		/**	Copy assignment.
@@ -299,7 +302,7 @@ namespace detail
 		{
 			if (this != &other)
 			{
-				m_vtable->m_dtor(m_storage);
+				m_vtable->m_destruct(m_storage);
 				m_vtable->m_copy(m_storage, other.m_storage);
 			}
 			return *this;
@@ -311,9 +314,9 @@ namespace detail
 		copyable_function& operator=(copyable_function&& other) noexcept
 		{
 			assert(this != &other);
-			m_vtable->m_dtor(m_storage);
+			m_vtable->m_destruct(m_storage);
 			m_vtable = std::exchange(other.m_vtable, &null_vtable());
-			m_vtable->m_move(m_storage, other.m_storage);
+			m_vtable->m_move_then_destruct(m_storage, other.m_storage);
 			return *this;
 		}
 		/**	Assign a given callable as the wrapped invocable.
@@ -332,7 +335,7 @@ namespace detail
 		{
 			static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "copyable_function requires nothrow invocable.");
 			using callable_type = std::decay_t<Callable>;
-			m_vtable->m_dtor(m_storage);
+			m_vtable->m_destruct(m_storage);
 			m_vtable = &callable_vtable<callable_type>();
 			if constexpr (detail::copyable_function_storage::store_inplace<callable_type>())
 			{
@@ -349,7 +352,7 @@ namespace detail
 		 */
 		copyable_function& operator=(const std::nullptr_t) noexcept
 		{
-			m_vtable->m_dtor(m_storage);
+			m_vtable->m_destruct(m_storage);
 			m_vtable = &null_vtable();
 			return *this;
 		}
@@ -433,13 +436,13 @@ namespace detail
 			return instance;
 		}
 
-		/**	A table of function to call, destroy, copy, or move the invocable stored in m_storage.
-		 */
-		const vtable_type* m_vtable;
-
 		/**	A stored callable that can be operated upon by passing to m_vtable's functions.
 		 */
 		mutable detail::copyable_function_storage m_storage;
+
+		/**	A table of function to call, destroy, copy, or move the invocable stored in m_storage.
+		 */
+		const vtable_type* m_vtable;
 	};
 
 } // namespace sh::detail

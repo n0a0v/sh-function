@@ -79,13 +79,13 @@ namespace detail
 		const call_type m_call;
 		/**	Destructs the given storage.
 		 */
-		const dtor_type m_dtor;
-		/**	Copies source storage into destination storage.
+		const dtor_type m_destruct;
+		/**	Copy constructs destination storage from source storage.
 		 */
 		const copy_type m_copy;
-		/**	Moves source storage into destination storage and then destructs the source.
+		/**	Move constructs destination storage from source then destructs the source.
 		 */
-		const move_type m_move;
+		const move_type m_move_then_destruct;
 
 		/**	Construct a vtable for an empty inplace_copyable_function.
 		 */
@@ -102,11 +102,11 @@ namespace detail
 					throw std::bad_function_call();
 				}
 			} }
-			, m_dtor{ [](void* const storage) noexcept -> void
+			, m_destruct{ [](void* const storage) noexcept -> void
 			{ } }
 			, m_copy{ [](void* const dst_storage, const void* const src_storage) -> void
 			{ } }
-			, m_move{ [](void* const dst_storage, void* const src_storage) noexcept -> void
+			, m_move_then_destruct{ [](void* const dst_storage, void* const src_storage) noexcept -> void
 			{ } }
 		{ }
 
@@ -119,19 +119,19 @@ namespace detail
 			{ 
 				return (*static_cast<Callable*>(storage))(std::forward<Args>(args)...);
 			} }
-			, m_dtor{ [](void* const storage) noexcept -> void
+			, m_destruct{ [](void* const storage) noexcept -> void
 			{
-				reinterpret_cast<Callable*>(storage)->~Callable();
+				static_cast<Callable*>(storage)->~Callable();
 			} }
 			, m_copy{ [](void* const dst_storage, const void* const src_storage) -> void
 			{ 
 				new(dst_storage) Callable(*static_cast<const Callable*>(src_storage));
 			} }
-			, m_move{ [](void* const dst_storage, void* const src_storage) noexcept -> void
+			, m_move_then_destruct{ [](void* const dst_storage, void* const src_storage) noexcept -> void
 			{
 				static_assert(std::is_nothrow_move_constructible_v<Callable>, "Callable must be nothrow move constructible.");
 				new(dst_storage) Callable{ std::move(*static_cast<Callable*>(src_storage)) };
-				reinterpret_cast<Callable*>(src_storage)->~Callable();
+				static_cast<Callable*>(src_storage)->~Callable();
 			} }
 		{ }
 
@@ -187,7 +187,7 @@ namespace detail
 		inplace_copyable_function(inplace_copyable_function&& other) noexcept
 			: m_vtable{ std::exchange(other.m_vtable, &null_vtable()) }
 		{
-			m_vtable->m_move(&m_storage, &other.m_storage);
+			m_vtable->m_move_then_destruct(&m_storage, &other.m_storage);
 		}
 		/**	Constructor from a given callable.
 		 *	@param callable An invocable to wrap and call from operator().
@@ -205,6 +205,7 @@ namespace detail
 			static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "inplace_copyable_function requires nothrow invocable.");
 			using callable_type = std::decay_t<Callable>;
 			static_assert(sizeof(callable_type) <= Capacity, "Callable too large for Capacity");
+			static_assert(alignof(callable_type) <= Alignment, "Callable requires alignment greater than Alignment");
 			m_vtable = &callable_vtable<callable_type>();
 			new(&m_storage) callable_type{ std::forward<Callable>(callable) };
 		}
@@ -212,7 +213,7 @@ namespace detail
 		 */
 		~inplace_copyable_function()
 		{
-			m_vtable->m_dtor(&m_storage);
+			m_vtable->m_destruct(&m_storage);
 		}
 
 		/**	Copy assignment.
@@ -223,7 +224,7 @@ namespace detail
 		{
 			if (this != &other)
 			{
-				m_vtable->m_dtor(&m_storage);
+				m_vtable->m_destruct(&m_storage);
 				m_vtable->m_copy(&m_storage, &other.m_storage);
 			}
 			return *this;
@@ -235,9 +236,9 @@ namespace detail
 		inplace_copyable_function& operator=(inplace_copyable_function&& other) noexcept
 		{
 			assert(this != &other);
-			m_vtable->m_dtor(&m_storage);
+			m_vtable->m_destruct(&m_storage);
 			m_vtable = std::exchange(other.m_vtable, &null_vtable());
-			m_vtable->m_move(&m_storage, &other.m_storage);
+			m_vtable->m_move_then_destruct(&m_storage, &other.m_storage);
 			return *this;
 		}
 		/**	Null assignment.
@@ -245,7 +246,7 @@ namespace detail
 		 */
 		inplace_copyable_function& operator=(const std::nullptr_t) noexcept
 		{
-			m_vtable->m_dtor(&m_storage);
+			m_vtable->m_destruct(&m_storage);
 			m_vtable = &null_vtable();
 			return *this;
 		}
@@ -266,7 +267,8 @@ namespace detail
 			static_assert(NoExcept == false || std::is_nothrow_invocable_r_v<result_type, Callable, Args...>, "inplace_copyable_function requires nothrow invocable.");
 			using callable_type = std::decay_t<Callable>;
 			static_assert(sizeof(callable_type) <= Capacity, "Callable too large for Capacity");
-			m_vtable->m_dtor(&m_storage);
+			static_assert(alignof(callable_type) <= Alignment, "Callable requires alignment greater than Alignment");
+			m_vtable->m_destruct(&m_storage);
 			m_vtable = &callable_vtable<callable_type>();
 			new(&m_storage) callable_type{ std::forward<Callable>(callable) };
 			return *this;
@@ -355,13 +357,13 @@ namespace detail
 			return instance;
 		}
 
-		/**	A table of function to call, destroy, or move the invocable stored in m_storage.
-		 */
-		const vtable_type* m_vtable;
-
 		/**	A stored callable that can be operated upon by passing to m_vtable's functions.
 		 */
 		mutable storage_type m_storage;
+
+		/**	A table of function to call, destroy, or move the invocable stored in m_storage.
+		 */
+		const vtable_type* m_vtable;
 	};
 
 } // namespace sh::detail
